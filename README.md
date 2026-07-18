@@ -131,7 +131,7 @@ bswitch switch customer-a-write
 ```
 
 ```bash
-# 作業終了 → 全プロジェクトから仮想ユーザーを除名
+# 作業終了 → 参加中のプロジェクトから仮想ユーザーを除名
 bswitch release
 
 # → BACKLOG_API_KEY 等がunsetされる
@@ -156,7 +156,7 @@ bswitch enforce
 ### 3.4 ポイント
 
 - `switch` するたびに**前のプロファイルは自動で解除**されます（排他動作）。手動で `release` してから `switch` する必要はありません。
-- `release` は「全部外す」コマンドです。作業終了時に使います。
+- `release` は「参加中の付与を外す」コマンドです。作業終了時に使います。state.jsonが消えた等で残留参加が疑われる場合は `bswitch release --all` でconfig定義済みの全プロジェクトを走査して回収できます。
 - シェル統合（`eval "$(command bswitch shell-init zsh)"`）を入れないと、`BACKLOG_API_KEY` 等の環境変数は実際にはセットされません（stdoutに出力されるだけです）。
 - `--duration` を指定しなくても、configに `default_duration = 8h` と書いておけば自動で期限付きになります。
 
@@ -164,7 +164,7 @@ bswitch enforce
 
 #### `bswitch switch [profile...]`
 
-仮想ユーザーを対象プロジェクトへ参加させます（排他動作: 先にconfig定義済みの全プロジェクトから仮想ユーザー2人を除名してから、選択分を参加させます）。
+仮想ユーザーを対象プロジェクトへ参加させます（排他動作: 先に前回付与分（state.jsonに記録されたプロジェクト）から仮想ユーザー2人を除名してから、選択分を参加させます）。
 
 ```bash
 # プロファイル名を直接指定
@@ -185,12 +185,15 @@ bswitch switch customer-a --duration 2h
 
 複数プロファイルを選択した場合、`BACKLOG_PROJECT` はセットされません（`unset`）。単一プロジェクトに決め打ちすると、外部ツールが誤ったプロジェクトをデフォルト扱いする事故につながるためです。
 
-#### `bswitch release`
+#### `bswitch release [--all]`
 
-config定義済みの全プロジェクトから両仮想ユーザーを除名し、環境変数をunsetします。
+state.jsonに記録された参加中プロジェクトから両仮想ユーザーを除名し、環境変数をunsetします。付与記録が0件ならAPIは呼びません。
+
+`--all` を付けると、config定義済みの全プロジェクトを走査して除名します。state.json消失等で通常のreleaseから漏れた残留参加を回収する回復経路です（プロジェクト数×4回の更新系API呼び出しを消費するため、通常は不要です）。
 
 ```bash
-bswitch release
+bswitch release        # 参加中プロジェクトのみ（通常はこちら）
+bswitch release --all  # config全プロジェクトを走査（回復用）
 ```
 
 #### `bswitch status`

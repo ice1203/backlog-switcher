@@ -176,13 +176,56 @@ def test_switch_shows_real_key_when_stdout_is_not_a_tty(
 
 
 def test_release_end_to_end_with_fake_client(
-    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], config_path: Path
 ) -> None:
+    """既定のreleaseはstate.jsonに記録された参加中プロジェクトから除名する。"""
+    state_path = config_path.parent / "state.json"
+    initial_state = State(
+        grants=[Grant(profile="test-read", project="MY_PROJECT", user_id=100, permission="read", expires_at=None)]
+    )
+    save_state(state_path, initial_state)
+
     monkeypatch.setenv(MASTER_KEY_ENV, "dummy-master-key")
     fake = FakeBacklogClient()
     fake.members["MY_PROJECT"] = {100}
     monkeypatch.setattr(cli, "BacklogClient", lambda *_a, **_kw: fake)
     monkeypatch.setattr(sys, "argv", ["bswitch", "release"])
+
+    cli.main()
+
+    captured = capsys.readouterr()
+    assert "unset BACKLOG_API_KEY BACKLOG_SPACE BACKLOG_DOMAIN BACKLOG_PROJECT" in captured.out
+    assert fake.members["MY_PROJECT"] == set()
+    assert load_state(state_path).grants == []
+
+
+def test_release_default_without_grants_does_not_call_api(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """付与記録が0件の既定releaseはAPIを呼ばず、unset行のみ出力する。"""
+    monkeypatch.setenv(MASTER_KEY_ENV, "dummy-master-key")
+    fake = FakeBacklogClient()
+    fake.members["MY_PROJECT"] = {100}  # 記録なしの残留参加（既定では触らない）
+    monkeypatch.setattr(cli, "BacklogClient", lambda *_a, **_kw: fake)
+    monkeypatch.setattr(sys, "argv", ["bswitch", "release"])
+
+    cli.main()
+
+    captured = capsys.readouterr()
+    assert "unset BACKLOG_API_KEY BACKLOG_SPACE BACKLOG_DOMAIN BACKLOG_PROJECT" in captured.out
+    assert fake.members["MY_PROJECT"] == {100}
+    assert fake.call_log == []
+
+
+def test_release_all_sweeps_config_projects_even_without_grants(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """release --all はstate.jsonに記録がなくてもconfig全プロジェクトを走査する（回復経路）。"""
+    monkeypatch.setenv(MASTER_KEY_ENV, "dummy-master-key")
+    fake = FakeBacklogClient()
+    fake.members["MY_PROJECT"] = {100}
+    monkeypatch.setattr(cli, "BacklogClient", lambda *_a, **_kw: fake)
+    monkeypatch.setattr(sys, "argv", ["bswitch", "release", "--all"])
 
     cli.main()
 
