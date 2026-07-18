@@ -51,7 +51,7 @@ def make_export_lines(api_key: str, space: str, project: str | None) -> list[str
     """
     lines = [
         f"export BACKLOG_API_KEY={shlex.quote(api_key)}",
-        f"export BACKLOG_SPACE={shlex.quote(f'https://{space}')}",
+        f"export BACKLOG_SPACE={shlex.quote(space)}",
         f"export BACKLOG_DOMAIN={shlex.quote(space)}",
     ]
     if project is None:
