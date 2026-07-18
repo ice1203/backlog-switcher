@@ -1,9 +1,13 @@
 """排他動作・TTL（有効期限）ロジック。
 
-安全のための設計判断（brief 11.「判断指針」の「安全 > シンプルさ」に基づく）:
-  - `switch()` は brief の関数シグネチャに加えて `all_profiles` を受け取る。
-    排他除名（config定義済みの**全**プロジェクトからの除名）には選択されたプロファイルだけでなく
-    config全体のプロジェクト一覧が必要なため。
+安全のための設計判断（docs/design.md「判断指針」の「安全 > シンプルさ」に基づく）:
+  - `switch()` の排他除名は「前回grantsに記録されたプロジェクト」のみを対象にする。
+    config定義済み全プロジェクトの走査はBacklogのレートリミットを
+    浪費するため。state.json消失等で回収漏れが起きた場合は `release`（全件除名）で回復できる。
+  - `switch()` は除名・参加のAPI操作が成功するたびにstate.jsonへ保存する（こまめな保存）。
+    途中で失敗・中断しても「実際の参加状況」と「記録」のズレが最小になり、
+    参加済みプロジェクトは次回switchの排他除名で自動回収できる。
+    ファイル書き込みは何度やってもAPIレートリミットを消費しないため、保存回数は惜しまない。
   - 排他除名・release では project-user だけでなく project-administrator も除名する
     （API側の `delete_project_administrator` は対象不在エラー（code 6）のみ無視するため、
     「以前 admin だったユーザーの管理者フラグが除名後も残る」事故を防ぐ safety net として機能する。
@@ -17,6 +21,7 @@ from __future__ import annotations
 
 import re
 import sys
+from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 
 from bswitch.api import BacklogClient
@@ -50,7 +55,7 @@ def parse_duration(value: str) -> int:
 
 
 #: `--duration` も `default_duration` も未指定の場合に適用するプログラム既定値。
-#: 「無期限」を既定にすると失効忘れの事故につながるため、安全側に倒す（brief 11.「安全 > シンプルさ」）。
+#: 「無期限」を既定にすると失効忘れの事故につながるため、安全側に倒す（判断指針「安全 > シンプルさ」）。
 _FALLBACK_DURATION = "8h"
 
 
@@ -133,7 +138,11 @@ def resolve_user_ids(config: DefaultConfig, client: BacklogClient, state: State)
 
 
 def _add_user_idempotent(client: BacklogClient, project: str, user_id: int) -> None:
-    """プロジェクトへユーザーを参加させる（既に参加済みなら何もしない＝冪等）。"""
+    """プロジェクトへユーザーを参加させる（既に参加済みなら何もしない＝冪等）。
+
+    追加失敗（権限エラー含む）は api.py の例外がそのまま伝播する。
+    ユーザーが明示的に選択したプロジェクトへの追加失敗を隠さないため。
+    """
     existing = {u.get("id") for u in client.get_project_users(project)}
     if user_id in existing:
         return
@@ -154,12 +163,12 @@ def _ensure_project_administrator(client: BacklogClient, project: str, user_id: 
 
 
 def _exclusive_remove(client: BacklogClient, projects: list[str], writer_id: int, reader_id: int) -> None:
-    """config定義済みの全プロジェクトから両仮想ユーザー（プロジェクトユーザー・プロジェクト管理者）を除名する。
+    """指定されたプロジェクト群から両仮想ユーザー（プロジェクトユーザー・プロジェクト管理者）を除名する。
 
-    api.py の delete系メソッドは「対象が元々参加/管理者でない」場合（errors[].code == 6:
-    NoResourceError）のみエラーを無視して None を返すため、その意味でのみ冪等
-    （未参加ユーザーの除名・非管理者の管理者除名を含む）。レートリミット・認証エラー・
-    権限エラー等は BacklogApiError として送出され、この関数の呼び出し元に伝播する。
+    api.py の delete系メソッドは「対象が元々参加/管理者でない」（code 6: NoResourceError）と
+    「マスターユーザーに除名権限がない」（code 5: UnauthorizedOperationError）の場合のみ
+    エラーを無視して None を返すため、その意味でのみ冪等。レートリミット・認証エラー等は
+    BacklogApiError として送出され、この関数の呼び出し元に伝播する。
     """
     for project in projects:
         client.delete_project_user(project, writer_id)
@@ -175,16 +184,19 @@ def switch(
     duration: str | None,
     client: BacklogClient,
     state: State,
+    save: Callable[[], None] | None = None,
 ) -> tuple[list[str], str]:
     """仮想ユーザーを対象プロファイルのプロジェクトへ排他的に参加させる。
 
     Args:
         profiles: 対象として選択されたプロファイル（1件以上）。
-        all_profiles: config定義済みの全プロファイル（排他除名の対象プロジェクト算出に使用）。
+        all_profiles: config定義済みの全プロファイル（config定義外プロジェクトの操作除外に使用）。
         config: `[default]` セクション（space・仮想ユーザー・APIキー参照）。
         duration: `--duration` の値（未指定なら None）。
         client: マスターユーザーのAPIキーで初期化された BacklogClient。
         state: 現在の状態（このオブジェクトを直接変更する）。
+        save: stateを永続化するコールバック。除名・参加のAPI操作が成功するたびに呼ばれる
+            （Noneなら途中保存しない。最終保存は呼び出し側の責務）。
 
     Returns:
         (stdout出力行リスト, 選択された全体permissionレベル "read"/"write"/"admin")
@@ -208,23 +220,74 @@ def switch(
     # 3. メール→ID解決（read-only）
     writer_id, reader_id = resolve_user_ids(config, client, state)
 
-    # 4. 排他除名: config定義済みの全プロジェクトから両仮想ユーザーを除名
-    _exclusive_remove(client, _all_projects(all_profiles), writer_id, reader_id)
+    def _save() -> None:
+        if save is not None:
+            save()
 
-    # 5. 対象プロファイルのプロジェクトに参加させる
+    # 4. 継続判定: 選択プロファイルと同一プロジェクト・同一仮想ユーザーのgrantが既にあれば
+    #    「除名→再参加」のサイクル（更新系5コール）を丸ごとスキップできる。
+    #    同一プロファイルの再実行（新しいターミナルでの再switch・期限更新）を0コールにするため。
+    continuing: dict[str, Grant] = {}
+    for profile in profiles:
+        uid = reader_id if profile.permission == "read" else writer_id
+        for g in state.grants:
+            if g.project == profile.project and g.user_id == uid:
+                continuing[profile.project] = g
+
+    # 5. 排他除名: 前回grantsに含まれるプロジェクトのみ（継続プロジェクトは除く。
+    #    config定義済み全プロジェクトの走査はレートリミット枠（更新系150回/時）を浪費するため）。
+    #    1プロジェクト分の除名が完了するたびに記録を削除して保存し、
+    #    途中失敗しても「実際の参加状況」と「state.json」のズレを最小化する。
+    known = set(_all_projects(all_profiles))
+    for prev_project in list(dict.fromkeys(g.project for g in state.grants)):
+        if prev_project in continuing:
+            continue  # 今回も同一ユーザーで参加継続するため除名しない（記録は参加フェーズで更新）
+        if prev_project in known:
+            _exclusive_remove(client, [prev_project], writer_id, reader_id)
+        else:
+            # config定義外のプロジェクトには操作しない（docs/design.md「禁止事項」）。記録の削除のみ行う。
+            print(
+                f"警告: {prev_project} は現在のconfigに存在しないため、"
+                "除名（API操作）をスキップしました（state.jsonの記録のみ削除します）",
+                file=sys.stderr,
+            )
+        state.grants = [g for g in state.grants if g.project != prev_project]
+        _save()
+
+    # 6. 対象プロファイルのプロジェクトに参加させる（継続プロジェクトは参加API省略）。
+    #    参加が成功するたびにGrantを記録・保存する（後続の管理者付与・APIキー解決が
+    #    失敗しても、参加済みの事実が記録に残り次回switchの除名で回収できる）。
     new_grants: list[Grant] = []
     effective_permissions: list[str] = []
 
     for profile in profiles:
-        if profile.permission == "read":
-            _add_user_idempotent(client, profile.project, reader_id)
-            effective = "read"
-            granted_user_id = reader_id
-        else:
-            _add_user_idempotent(client, profile.project, writer_id)
-            effective = profile.permission
-            granted_user_id = writer_id
-            if profile.permission == "admin":
+        granted_user_id = reader_id if profile.permission == "read" else writer_id
+        prev = continuing.get(profile.project)
+        if prev is None:
+            _add_user_idempotent(client, profile.project, granted_user_id)
+        elif prev.permission == "admin" and profile.permission != "admin":
+            # admin→write/read切替（同一ユーザー継続）: 残っている管理者フラグのみ外す。
+            # 失敗時はprevの記録（admin）が残るため、次回switchで再試行される。
+            client.delete_project_administrator(profile.project, granted_user_id)
+        grant = Grant(
+            profile=profile.name,
+            project=profile.project,
+            user_id=granted_user_id,
+            # adminは管理者付与前だがadminとして先に記録する（付与後・記録前に落ちても
+            # 除名側は admin として掃除されるため安全側。失敗したら直後にwriteへ訂正する）。
+            permission=profile.permission,
+            expires_at=expires_at,
+        )
+        if prev is not None:
+            state.grants = [g for g in state.grants if g is not prev]
+        state.grants.append(grant)
+        _save()
+
+        effective = profile.permission
+        if profile.permission == "admin":
+            if prev is not None and prev.permission == "admin":
+                pass  # 前回付与済みの管理者権限を継続（API呼び出しなし）
+            else:
                 ok = _ensure_project_administrator(client, profile.project, writer_id)
                 if not ok:
                     print(
@@ -233,19 +296,14 @@ def switch(
                         file=sys.stderr,
                     )
                     effective = "write"
+                    grant.permission = "write"
+                    _save()
 
         effective_permissions.append(effective)
-        new_grants.append(
-            Grant(
-                profile=profile.name,
-                project=profile.project,
-                user_id=granted_user_id,
-                permission=effective,
-                expires_at=expires_at,
-            )
-        )
+        new_grants.append(grant)
 
-    # 6. Grant記録（排他除名により以前のgrantsは全て無効化されているため丸ごと置き換える）
+    # 7. Grant記録の正規化（除名フェーズで旧記録は削除済みのため、今回付与分のみが残る。
+    #    最終的な永続化は呼び出し側の save_state が行う）
     state.grants = new_grants
 
     # 7. stdout出力行の生成
@@ -268,14 +326,29 @@ def release(
     all_profiles: list[Profile],
     client: BacklogClient,
     state: State,
+    save: Callable[[], None] | None = None,
 ) -> list[str]:
     """config定義済みの全プロジェクトから両仮想ユーザーを除名する。
+
+    state.json消失等でswitchの除名（grants由来）から漏れたプロジェクトの回収経路のため、
+    grantsに関係なく全プロジェクトを走査する。1プロジェクト分の除名が完了するたびに
+    該当grantを記録から削除して保存し、途中失敗しても記録と実状態のズレを最小化する。
+
+    Args:
+        save: stateを永続化するコールバック（除名の進行に応じて呼ばれる。Noneなら途中保存しない）。
 
     Returns:
         stdout出力行リスト（unset行）。
     """
     writer_id, reader_id = resolve_user_ids(config, client, state)
-    _exclusive_remove(client, _all_projects(all_profiles), writer_id, reader_id)
+    for project in _all_projects(all_profiles):
+        _exclusive_remove(client, [project], writer_id, reader_id)
+        remaining = [g for g in state.grants if g.project != project]
+        if len(remaining) != len(state.grants):
+            state.grants = remaining
+            if save is not None:
+                save()
+    # config定義外プロジェクトのgrant記録も含めて最終的に空にする（API操作はしない）。
     state.grants = []
     return make_unset_lines()
 
@@ -347,11 +420,18 @@ def enforce_expired(
     all_profiles: list[Profile],
     client: BacklogClient,
     state: State,
+    save: Callable[[], None] | None = None,
 ) -> int:
     """期限切れGrantを除名する（定期実行・遅延強制の両方から呼ばれる）。
 
     `config` は現状このロジック自体には使わないが、
     シグネチャの一貫性（release/get_statusと同型）のため受け取る。
+
+    1件の除名が完了するたびに記録を削除して保存し、途中失敗しても記録と実状態のズレを
+    最小化する。
+
+    Args:
+        save: stateを永続化するコールバック（除名の進行に応じて呼ばれる。Noneなら途中保存しない）。
 
     Returns:
         除名した件数。
@@ -359,12 +439,10 @@ def enforce_expired(
     del config  # 現状未使用（シグネチャの一貫性のため受け取る）
     known_projects = set(_all_projects(all_profiles))
     now = datetime.now(UTC)
-    remaining: list[Grant] = []
     removed = 0
 
-    for grant in state.grants:
+    for grant in list(state.grants):
         if not _is_expired(grant, now):
-            remaining.append(grant)
             continue
 
         if grant.project in known_projects:
@@ -372,13 +450,15 @@ def enforce_expired(
             if grant.permission == "admin":
                 client.delete_project_administrator(grant.project, grant.user_id)
         else:
-            # config定義外のプロジェクトには操作しない（brief制約）。記録の削除のみ行う。
+            # config定義外のプロジェクトには操作しない（docs/design.md「禁止事項」）。記録の削除のみ行う。
             print(
                 f"警告: {grant.project} は現在のconfigに存在しないため、"
                 "期限切れ付与の自動解除（API操作）をスキップしました（state.jsonの記録のみ削除します）",
                 file=sys.stderr,
             )
+        state.grants = [g for g in state.grants if g is not grant]
+        if save is not None:
+            save()
         removed += 1
 
-    state.grants = remaining
     return removed

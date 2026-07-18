@@ -35,7 +35,7 @@ def test_make_export_lines_project_none_unsets_backlog_project() -> None:
 
     assert "unset BACKLOG_PROJECT" in lines
     assert not any(line.startswith("export BACKLOG_PROJECT") for line in lines)
-    # 空文字での代替も不可（brief要件）: unset行以外にBACKLOG_PROJECTへの言及がないこと。
+    # 空文字での代替も不可（docs/design.md「--multi の仕様」）: unset行以外にBACKLOG_PROJECTへの言及がないこと。
     assert sum(1 for line in lines if "BACKLOG_PROJECT" in line) == 1
 
 

@@ -15,8 +15,7 @@
 - 対象スペースが `BSWITCH_E2E_SPACE` の値と一致しなければ **即失敗**（スキップではなく
   `pytest.fail`）させる。
 - APIキーはログ・ファイル・テストコードに一切書き出さない。
-- テスト用configは環境変数から組み立てた内容を毎回 `$TMPDIR/bswitch-e2e-config` に書き出して
-  使う（brief記載のテスト用config仕様どおり）。
+- テスト用configは環境変数から組み立てた内容を毎回 `$TMPDIR/bswitch-e2e-config` に書き出して使う。
 """
 
 from __future__ import annotations
@@ -65,7 +64,7 @@ def _required_env(name: str) -> str:
 
 
 def _build_e2e_config_content(space: str, writer_email: str, reader_email: str) -> str:
-    """E2Eテスト用configの内容を組み立てる（brief「E2Eテスト仕様」記載の構成どおり）。
+    """E2Eテスト用configの内容を組み立てる。
 
     space・writer_user・reader_userは環境変数から注入する
     （実スペース名・実メールアドレスをコードにハードコードしないため）。
@@ -227,9 +226,8 @@ def _cleanup_after_session(e2e_config_path: Path, e2e_space: str) -> Iterator[No
     """セッション終了時、テスト内容にかかわらず必ず対象プロジェクトから両仮想ユーザーを除名する後片付け。
 
     テスト途中で失敗しても後片付けが漏れないようにするための安全網
-    （brief「後片付け確認」要件・完了基準「E2E終了後、テストプロジェクトから仮想ユーザーが
-    除名されている」に対応）。E2E無効時・configが `BSWITCH_E2E_SPACE` 以外を指す異常時は
-    何もしない。
+    （「E2E終了後、テストプロジェクトから仮想ユーザーが除名されている」ことを保証する）。
+    E2E無効時・configが `BSWITCH_E2E_SPACE` 以外を指す異常時は何もしない。
     """
     yield
     if not e2e_enabled():
