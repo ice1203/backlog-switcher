@@ -1,6 +1,6 @@
 """bswitch 実機E2Eテスト（`BSWITCH_E2E_SPACE` で指定したスペースの MY_PROJECT のみ対象）。
 
-「10. E2Eテスト仕様」の8項目を、記載の順序で直列実行する:
+以下の8項目を、この順序で直列実行する:
 
   1. 前提確認（スペース確認・プロジェクト存在確認・仮想ユーザー2人のID解決）
   2. switch test-read → reader が参加
@@ -11,7 +11,7 @@
   7. TTL: switch test-read --duration 30s → 30秒待機 → enforce → reader除名
   8. release → 両仮想ユーザーが除名（後片付けを兼ねる。CLI経由で検証）
 
-実装方法（brief指定）:
+実装方法:
   - 基本は `switcher.py` / `api.py` を直接Pythonから呼び出し、APIの結果を直接検証する。
   - ステップ3・8はCLI（`uv run bswitch ...`）をsubprocess経由で呼び、
     stdout（evalされるexport/unset行）とstderr（メッセージ）の分離を確認する。
@@ -51,12 +51,12 @@ from .conftest import ALLOWED_PROJECT, e2e_enabled
 #: errors[].code == 13: TooManyRequestsError。
 _CODE_TOO_MANY_REQUESTS = 13
 
-#: brief記載どおり、BSWITCH_E2E=1 が未設定なら本モジュールの全テストをスキップする。
+#: BSWITCH_E2E=1 が未設定なら本モジュールの全テストをスキップする。
 #: skipif はフィクスチャのセットアップより前に評価されるため、フラグ未設定時は実APIに一切触れない。
 pytestmark = pytest.mark.skipif(
     not e2e_enabled(),
     reason="BSWITCH_E2E=1 が設定されていないためE2Eテストをスキップします"
-    "（brief 禁止事項: 明示フラグなしで単体テストから実APIを呼ばない）",
+    "（明示フラグなしでテストから実APIを呼ばないための安全装置）",
 )
 
 #: リポジトリルート（tests/e2e/test_e2e.py から3階層上）。CLIサブプロセスのcwdに使う。
@@ -156,7 +156,7 @@ def resolved_ids(e2e_config: Config, master_client: BacklogClient) -> dict[str, 
 
 
 class TestE2EFlow:
-    """brief『10. E2Eテスト仕様』の8項目をこの順序で直列実行するテストクラス。
+    """E2Eテスト8項目をこの順序で直列実行するテストクラス。
 
     pytestはデフォルトでモジュール内のテストを定義順に収集・実行する
     （本リポジトリにはpytest-randomly等の順序をランダム化するプラグインは入っていない）。
@@ -305,7 +305,7 @@ class TestE2EFlow:
             request.node.user_properties.append(("admin_result", "granted"))
             print("[05 switch test-admin] project administrator flag granted successfully")
         else:
-            # brief記載どおりE2E対象スペースではマスターがスペース管理者のため通常はここに来ない想定だが、
+            # E2E対象スペースではマスターがスペース管理者のため通常はここに来ない想定だが、
             # 実際に縮退した場合は記録して継続する（異常終了しない設計の実機確認にもなる）。
             assert overall == "write"
             request.node.user_properties.append(("admin_result", "degraded_to_write"))
@@ -363,7 +363,7 @@ class TestE2EFlow:
         assert grant is not None and grant.expires_at is not None
         print(f"[07 ttl] granted with --duration 30s (expires_at={grant.expires_at}); sleeping 31s...")
 
-        # brief記載のE2E仕様どおり実時間で30秒待機する（TTLの実挙動を実機で確認するため）。
+        # 実時間で30秒待機する（TTLの実挙動を実機で確認するため）。
         time.sleep(31)
 
         state = load_state(e2e_config.state_path)

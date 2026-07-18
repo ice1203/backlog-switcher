@@ -3,7 +3,7 @@
 APIキーは全リクエストにクエリパラメータ `apiKey` として付与する
 （出典: https://developer.nulab.com/ja/docs/backlog/auth/ ）。
 
-呼び出すエンドポイントは brief で許可された範囲のみ:
+呼び出すエンドポイントは docs/design.md「禁止事項」で許可された範囲のみ:
   - プロジェクトユーザー追加/削除/一覧
   - プロジェクト管理者追加/削除/一覧
   - ユーザー一覧（メール→ID解決用）
@@ -120,7 +120,12 @@ class BacklogClient:
     # -- プロジェクトユーザー -------------------------------------------
 
     def add_project_user(self, project: str, user_id: int) -> dict[str, Any]:
-        """POST /api/v2/projects/:projectIdOrKey/users （form: userId）。"""
+        """POST /api/v2/projects/:projectIdOrKey/users （form: userId）。
+
+        ユーザーが明示的に選択したプロジェクトへの追加失敗は隠さない。
+        権限エラー（code 5）も PermissionError として送出する
+        （マスターユーザーがそのプロジェクトの管理者でない＝そのprofileは使えない）。
+        """
         response = self._client.post(
             f"/api/v2/projects/{project}/users",
             params=self._params(),
@@ -146,7 +151,7 @@ class BacklogClient:
         )
         if response.status_code >= 400:
             errors = self._extract_errors(response)
-            if errors and errors[0].get("code") == CODE_NO_RESOURCE:
+            if errors and errors[0].get("code") in (CODE_NO_RESOURCE, CODE_UNAUTHORIZED_OPERATION):
                 return None
             self._raise_for_error(response, project=project, operation="ユーザー除名")
         return self._safe_json(response)
@@ -196,7 +201,7 @@ class BacklogClient:
         )
         if response.status_code >= 400:
             errors = self._extract_errors(response)
-            if errors and errors[0].get("code") == CODE_NO_RESOURCE:
+            if errors and errors[0].get("code") in (CODE_NO_RESOURCE, CODE_UNAUTHORIZED_OPERATION):
                 return None
             self._raise_for_error(response, project=project, operation="プロジェクト管理者除名")
         return self._safe_json(response)

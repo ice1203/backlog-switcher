@@ -130,7 +130,7 @@ def load_config(path: Path | None = None) -> Config:
     """configファイルを読み込みバリデーションする。
 
     ファイル不在時はサンプルconfigをstderrへ表示して `sys.exit(1)` する
-    （brief/design.md の仕様どおり、自動生成はしない）。
+    （自動生成はしない仕様）。
     内容が不正な場合は ConfigError を送出する。
     """
     config_path = path if path is not None else get_config_path()

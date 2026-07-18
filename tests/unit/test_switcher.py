@@ -15,6 +15,7 @@ from datetime import UTC, datetime, timedelta
 import pytest
 
 from bswitch import switcher
+from bswitch.api import BacklogApiError
 from bswitch.models import DefaultConfig, Grant, Profile, State
 
 from .conftest import FakeBacklogClient
@@ -39,17 +40,17 @@ def _api_key_env(monkeypatch: pytest.MonkeyPatch) -> None:
 def test_switch_exclusive_removal_precedes_add(
     fake_client: FakeBacklogClient, numeric_config: DefaultConfig, state: State
 ) -> None:
+    """前回grantsに記録されたプロジェクトからの除名が、対象プロジェクトへの参加より先に行われる。"""
     profile_a = Profile(name="a", project="PROJ_A", permission="read")
     profile_b = Profile(name="b", project="PROJ_B", permission="write")
     all_profiles = [profile_a, profile_b]
+    # 前回はPROJ_Bにwriterを参加させていた状態。
+    state.grants = [Grant(profile="b", project="PROJ_B", user_id=200, permission="write", expires_at=None)]
+    fake_client.members["PROJ_B"] = {200}
 
     lines, overall = switcher.switch([profile_a], all_profiles, numeric_config, None, fake_client, state)
 
     expected_removal_phase = [
-        ("delete_project_user", "PROJ_A", 200),
-        ("delete_project_user", "PROJ_A", 100),
-        ("delete_project_administrator", "PROJ_A", 200),
-        ("delete_project_administrator", "PROJ_A", 100),
         ("delete_project_user", "PROJ_B", 200),
         ("delete_project_user", "PROJ_B", 100),
         ("delete_project_administrator", "PROJ_B", 200),
@@ -61,6 +62,9 @@ def test_switch_exclusive_removal_precedes_add(
     add_index = fake_client.call_log.index(("add_project_user", "PROJ_A", 100))
     assert add_index >= len(expected_removal_phase)
 
+    # 排他動作: 前回参加していたwriterはPROJ_Bから除名済み。
+    assert 200 not in fake_client.members["PROJ_B"]
+
     assert overall == "read"
     assert len(state.grants) == 1
     grant = state.grants[0]
@@ -71,17 +75,223 @@ def test_switch_exclusive_removal_precedes_add(
     assert f"export BACKLOG_API_KEY={READER_KEY}" in lines
 
 
+def test_switch_does_not_sweep_unrelated_config_projects(
+    fake_client: FakeBacklogClient, numeric_config: DefaultConfig, state: State
+) -> None:
+    """前回grantsに含まれないプロジェクトは、config定義済みでも除名スイープしない（レートリミット対策）。"""
+    profile_a = Profile(name="a", project="PROJ_A", permission="read")
+    profile_b = Profile(name="b", project="PROJ_B", permission="write")
+
+    switcher.switch([profile_a], [profile_a, profile_b], numeric_config, None, fake_client, state)
+
+    touched_projects = {call[1] for call in fake_client.call_log if len(call) > 1}
+    assert touched_projects == {"PROJ_A"}
+
+
 def test_switch_only_removes_from_config_defined_projects(
     fake_client: FakeBacklogClient, numeric_config: DefaultConfig, state: State
 ) -> None:
-    """config定義外プロジェクトには操作しない（brief禁止事項）ことをall_profiles経由で確認する。"""
+    """config定義外プロジェクトには操作しない（docs/design.md「禁止事項」）。
+
+    前回grantsにconfigから削除されたプロジェクトの記録が残っていても、除名APIを呼ばない。
+    """
     profile_a = Profile(name="a", project="PROJ_A", permission="write")
     all_profiles = [profile_a]
+    state.grants = [Grant(profile="gone", project="GONE", user_id=100, permission="read", expires_at=None)]
 
     switcher.switch([profile_a], all_profiles, numeric_config, None, fake_client, state)
 
     touched_projects = {call[1] for call in fake_client.call_log if len(call) > 1}
     assert touched_projects == {"PROJ_A"}
+
+
+def test_switch_saves_state_after_each_api_mutation(
+    fake_client: FakeBacklogClient, numeric_config: DefaultConfig, state: State
+) -> None:
+    """こまめな保存: 除名完了時・参加成功時にそれぞれsaveが呼ばれ、その時点の実状態を反映している。"""
+    profile_a = Profile(name="a", project="PROJ_A", permission="read")
+    profile_b = Profile(name="b", project="PROJ_B", permission="write")
+    state.grants = [Grant(profile="b", project="PROJ_B", user_id=200, permission="write", expires_at=None)]
+    fake_client.members["PROJ_B"] = {200}
+
+    snapshots: list[set[str]] = []
+
+    def save() -> None:
+        snapshots.append({g.project for g in state.grants})
+
+    switcher.switch([profile_a], [profile_a, profile_b], numeric_config, None, fake_client, state, save=save)
+
+    # 1回目: PROJ_Bの除名完了直後（記録から削除済み）。2回目: PROJ_Aの参加成功直後。
+    assert snapshots == [set(), {"PROJ_A"}]
+    assert {g.project for g in state.grants} == {"PROJ_A"}
+
+
+def test_switch_records_grant_before_admin_promotion_failure(
+    fake_client: FakeBacklogClient, numeric_config: DefaultConfig, state: State
+) -> None:
+    """参加成功→管理者付与で例外（レートリミット等）の場合でも、参加の事実は保存済み。
+
+    次回switchの排他除名（grants由来）で回収できることを保証する。
+    """
+    profile = Profile(name="ad", project="P1", permission="admin")
+    saved_grants: list[list[tuple[str, str]]] = []
+
+    def save() -> None:
+        saved_grants.append([(g.project, g.permission) for g in state.grants])
+
+    def raise_rate_limit(project: str, user_id: int) -> dict[str, object]:
+        raise BacklogApiError("Rate Limit Exceeded", project=project, operation="プロジェクト管理者追加")
+
+    fake_client.add_project_administrator = raise_rate_limit  # type: ignore[method-assign]
+
+    with pytest.raises(BacklogApiError):
+        switcher.switch([profile], [profile], numeric_config, None, fake_client, state, save=save)
+
+    # 参加直後のsaveでP1のgrantが記録されている（管理者付与前だが安全側にadminとして記録）。
+    assert saved_grants[-1] == [("P1", "admin")]
+    assert [(g.project, g.permission) for g in state.grants] == [("P1", "admin")]
+
+
+# ---------------------------------------------------------------------------
+# 継続スキップ: 同一プロジェクト・同一仮想ユーザーならAPIコールを省略する
+# ---------------------------------------------------------------------------
+
+
+def test_switch_same_profile_again_makes_no_api_calls(
+    fake_client: FakeBacklogClient, numeric_config: DefaultConfig, state: State
+) -> None:
+    """同一プロファイルの再switchはAPIコール0回で完了し、期限だけ更新される。"""
+    profile = Profile(name="r", project="P1", permission="read")
+    switcher.switch([profile], [profile], numeric_config, None, fake_client, state)
+    fake_client.call_log.clear()
+
+    switcher.switch([profile], [profile], numeric_config, "30m", fake_client, state)
+
+    assert fake_client.call_log == []
+    assert 100 in fake_client.members["P1"]
+    expires = datetime.fromisoformat(state.grants[0].expires_at)  # type: ignore[arg-type]
+    assert expires - datetime.now(UTC) <= timedelta(minutes=31)
+
+
+def test_switch_same_admin_profile_again_makes_no_api_calls(
+    fake_client: FakeBacklogClient, numeric_config: DefaultConfig, state: State
+) -> None:
+    """admin継続時は管理者付与の確認・再付与も省略される。"""
+    profile = Profile(name="ad", project="P1", permission="admin")
+    switcher.switch([profile], [profile], numeric_config, None, fake_client, state)
+    fake_client.call_log.clear()
+
+    switcher.switch([profile], [profile], numeric_config, None, fake_client, state)
+
+    assert fake_client.call_log == []
+    assert 200 in fake_client.admins["P1"]
+    assert state.grants[0].permission == "admin"
+
+
+def test_switch_admin_to_write_same_project_removes_only_admin_flag(
+    fake_client: FakeBacklogClient, numeric_config: DefaultConfig, state: State
+) -> None:
+    """同一プロジェクトでadmin→write切替時は管理者フラグの除去1コールのみ。"""
+    admin_profile = Profile(name="ad", project="P1", permission="admin")
+    write_profile = Profile(name="w", project="P1", permission="write")
+    all_profiles = [admin_profile, write_profile]
+    switcher.switch([admin_profile], all_profiles, numeric_config, None, fake_client, state)
+    fake_client.call_log.clear()
+
+    switcher.switch([write_profile], all_profiles, numeric_config, None, fake_client, state)
+
+    assert fake_client.call_log == [("delete_project_administrator", "P1", 200)]
+    assert 200 in fake_client.members["P1"]
+    assert 200 not in fake_client.admins["P1"]
+    assert state.grants[0].permission == "write"
+
+
+def test_switch_write_to_admin_same_project_skips_member_readd(
+    fake_client: FakeBacklogClient, numeric_config: DefaultConfig, state: State
+) -> None:
+    """同一プロジェクトでwrite→admin切替時はメンバー除名・再参加をせず管理者付与のみ行う。"""
+    admin_profile = Profile(name="ad", project="P1", permission="admin")
+    write_profile = Profile(name="w", project="P1", permission="write")
+    all_profiles = [admin_profile, write_profile]
+    switcher.switch([write_profile], all_profiles, numeric_config, None, fake_client, state)
+    fake_client.call_log.clear()
+
+    switcher.switch([admin_profile], all_profiles, numeric_config, None, fake_client, state)
+
+    assert not any(call[0] in ("delete_project_user", "add_project_user") for call in fake_client.call_log)
+    assert ("add_project_administrator", "P1", 200) in fake_client.call_log
+    assert 200 in fake_client.admins["P1"]
+    assert state.grants[0].permission == "admin"
+
+
+def test_switch_read_to_write_same_project_swaps_virtual_users(
+    fake_client: FakeBacklogClient, numeric_config: DefaultConfig, state: State
+) -> None:
+    """同一プロジェクトでもユーザーが変わる切替（read→write）は除名→参加のフルサイクルを行う。"""
+    read_profile = Profile(name="r", project="P1", permission="read")
+    write_profile = Profile(name="w", project="P1", permission="write")
+    all_profiles = [read_profile, write_profile]
+    switcher.switch([read_profile], all_profiles, numeric_config, None, fake_client, state)
+    fake_client.call_log.clear()
+
+    switcher.switch([write_profile], all_profiles, numeric_config, None, fake_client, state)
+
+    assert ("delete_project_user", "P1", 100) in fake_client.call_log
+    assert ("add_project_user", "P1", 200) in fake_client.call_log
+    assert fake_client.members["P1"] == {200}
+
+
+# ---------------------------------------------------------------------------
+# release / enforce_expired のこまめな保存
+# ---------------------------------------------------------------------------
+
+
+def test_release_saves_state_incrementally(fake_client: FakeBacklogClient, numeric_config: DefaultConfig) -> None:
+    """releaseは1プロジェクト分の除名が完了するたびに該当grantを削除して保存する。"""
+    profile_a = Profile(name="a", project="P1", permission="write")
+    profile_b = Profile(name="b", project="P2", permission="read")
+    state = State(
+        grants=[
+            Grant(profile="a", project="P1", user_id=200, permission="write", expires_at=None),
+            Grant(profile="b", project="P2", user_id=100, permission="read", expires_at=None),
+        ]
+    )
+    snapshots: list[set[str]] = []
+
+    def save() -> None:
+        snapshots.append({g.project for g in state.grants})
+
+    switcher.release(numeric_config, [profile_a, profile_b], fake_client, state, save=save)
+
+    assert snapshots == [{"P2"}, set()]
+    assert state.grants == []
+
+
+def test_enforce_expired_saves_state_incrementally(
+    fake_client: FakeBacklogClient, numeric_config: DefaultConfig
+) -> None:
+    """enforce_expiredは1件の除名が完了するたびに記録を削除して保存する。"""
+    past = (datetime.now(UTC) - timedelta(seconds=10)).isoformat()
+    state = State(
+        grants=[
+            Grant(profile="a", project="P1", user_id=100, permission="read", expires_at=past),
+            Grant(profile="b", project="P2", user_id=200, permission="write", expires_at=past),
+        ]
+    )
+    all_profiles = [
+        Profile(name="a", project="P1", permission="read"),
+        Profile(name="b", project="P2", permission="write"),
+    ]
+    snapshots: list[set[str]] = []
+
+    def save() -> None:
+        snapshots.append({g.project for g in state.grants})
+
+    removed = switcher.enforce_expired(numeric_config, all_profiles, fake_client, state, save=save)
+
+    assert removed == 2
+    assert snapshots == [{"P2"}, set()]
+    assert state.grants == []
 
 
 # ---------------------------------------------------------------------------

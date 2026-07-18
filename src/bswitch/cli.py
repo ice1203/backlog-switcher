@@ -1,11 +1,11 @@
 """bswitch CLIエントリポイント（argparse）。
 
-出力の分離（brief/design.md厳守事項）:
+出力の分離（docs/design.md「シェル統合の仕組み」の厳守事項）:
   - 対話UIメッセージ・警告・エラー・list/statusの表示結果はすべてstderrへ。
   - stdoutには `switch`/`release` 成功時のexport/unset行のみを出力する
     （シェル関数 `bswitch()` がこれを丸ごと `eval` するため、他の文字列が混じると壊れる）。
 
-環境変数の入出力分離（brief厳守事項）:
+環境変数の入出力分離（docs/design.md「環境変数設計」の厳守事項）:
   - bswitchが読む入力は `BSWITCH_MASTER_API_KEY`（必須）と `BSWITCH_CONFIG`（任意）のみ。
   - `BACKLOG_API_KEY` はswitchが書き込む出力専用であり、bswitch自身は一切読まない。
 """
@@ -26,7 +26,7 @@ from bswitch.models import Profile, State
 from bswitch.state import load_state, save_state
 from bswitch.switcher import SwitcherError
 
-#: bswitchが読む唯一の入力用マスターAPIキー環境変数（brief 6.）。
+#: bswitchが読む唯一の入力用マスターAPIキー環境変数（docs/design.md「環境変数設計」）。
 ENV_MASTER_API_KEY = "BSWITCH_MASTER_API_KEY"
 
 #: cli層で一律に捕捉し「エラー: <message>」として終了するアプリケーションレベルの例外群。
@@ -125,7 +125,15 @@ def _handle_switch(args: argparse.Namespace, config: Config, client: BacklogClie
         # ui.py側で0件はexit(0)される想定だが、防御的にここでも扱う。
         sys.exit(0)
 
-    lines, _permission = switcher.switch(selected, all_profiles, config.default, args.duration, client, state)
+    lines, _permission = switcher.switch(
+        selected,
+        all_profiles,
+        config.default,
+        args.duration,
+        client,
+        state,
+        save=lambda: save_state(config.state_path, state),
+    )
     save_state(config.state_path, state)
 
     if sys.stdout.isatty():
@@ -146,7 +154,13 @@ def _handle_switch(args: argparse.Namespace, config: Config, client: BacklogClie
 
 def _handle_release(config: Config, client: BacklogClient, state: State) -> None:
     all_profiles = list(config.profiles.values())
-    lines = switcher.release(config.default, all_profiles, client, state)
+    lines = switcher.release(
+        config.default,
+        all_profiles,
+        client,
+        state,
+        save=lambda: save_state(config.state_path, state),
+    )
     save_state(config.state_path, state)
     print("config定義済みの全プロジェクトから仮想ユーザーを除名しました", file=sys.stderr)
     for line in lines:
@@ -187,7 +201,13 @@ def main() -> None:
             all_profiles = list(config.profiles.values())
 
             # 遅延強制: list/shell-init以外の全サブコマンド冒頭で期限切れGrantを解除する。
-            removed = switcher.enforce_expired(config.default, all_profiles, client, state)
+            removed = switcher.enforce_expired(
+                config.default,
+                all_profiles,
+                client,
+                state,
+                save=lambda: save_state(config.state_path, state),
+            )
             save_state(config.state_path, state)
             if removed:
                 print(f"期限切れの付与を{removed}件解除しました", file=sys.stderr)
