@@ -409,6 +409,23 @@ def test_admin_degrades_to_write_on_permission_error(
     assert f"export BACKLOG_API_KEY={WRITER_KEY}" in lines
 
 
+def test_admin_degrades_to_write_updates_grant_profile(
+    fake_client: FakeBacklogClient, numeric_config: DefaultConfig, state: State, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """admin縮退時、同一プロジェクトのwriteプロファイルが存在すればgrant.profileをそちらに訂正する。"""
+    fake_client.admin_denied_projects.add("P1")
+    admin_profile = Profile(name="ad", project="P1", permission="admin")
+    write_profile = Profile(name="w", project="P1", permission="write")
+    all_profiles = [admin_profile, write_profile]
+
+    lines, overall = switcher.switch([admin_profile], all_profiles, numeric_config, None, fake_client, state)
+
+    assert overall == "write"
+    assert state.grants[0].permission == "write"
+    assert state.grants[0].profile == "w"
+    assert "警告" in capsys.readouterr().err
+
+
 def test_admin_succeeds_when_not_denied(
     fake_client: FakeBacklogClient, numeric_config: DefaultConfig, state: State, capsys: pytest.CaptureFixture[str]
 ) -> None:
