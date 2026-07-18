@@ -3,7 +3,7 @@
 安全のための設計判断（docs/design.md「判断指針」の「安全 > シンプルさ」に基づく）:
   - `switch()` の排他除名は「前回grantsに記録されたプロジェクト」のみを対象にする。
     config定義済み全プロジェクトの走査はBacklogのレートリミットを
-    浪費するため。state.json消失等で回収漏れが起きた場合は `release`（全件除名）で回復できる。
+    浪費するため。state.json消失等で回収漏れが起きた場合は `release --all`（全件除名）で回復できる。
   - `switch()` は除名・参加のAPI操作が成功するたびにstate.jsonへ保存する（こまめな保存）。
     途中で失敗・中断しても「実際の参加状況」と「記録」のズレが最小になり、
     参加済みプロジェクトは次回switchの排他除名で自動回収できる。
@@ -327,28 +327,51 @@ def release(
     client: BacklogClient,
     state: State,
     save: Callable[[], None] | None = None,
+    *,
+    all_projects: bool = False,
 ) -> list[str]:
-    """config定義済みの全プロジェクトから両仮想ユーザーを除名する。
+    """両仮想ユーザーを除名し、grants記録を空にする。
 
-    state.json消失等でswitchの除名（grants由来）から漏れたプロジェクトの回収経路のため、
-    grantsに関係なく全プロジェクトを走査する。1プロジェクト分の除名が完了するたびに
-    該当grantを記録から削除して保存し、途中失敗しても記録と実状態のズレを最小化する。
+    既定ではstate.jsonのgrantsに記録されたプロジェクトのみを対象にする
+    （付与記録が0件ならAPIを一切呼ばず、レートリミットを消費しない）。
+    `all_projects=True` はconfig定義済みの全プロジェクトをgrantsに関係なく走査する回復経路で、
+    state.json消失等でgrants由来の除名から漏れた残留参加を回収できる。
+    いずれのモードも1プロジェクト分の除名が完了するたびに該当grantを記録から削除して
+    保存し、途中失敗しても記録と実状態のズレを最小化する。
 
     Args:
+        all_projects: Trueならconfig定義済みの全プロジェクトを走査する（`release --all`）。
         save: stateを永続化するコールバック（除名の進行に応じて呼ばれる。Noneなら途中保存しない）。
 
     Returns:
         stdout出力行リスト（unset行）。
     """
+    if not all_projects and not state.grants:
+        return make_unset_lines()
+
     writer_id, reader_id = resolve_user_ids(config, client, state)
-    for project in _all_projects(all_profiles):
-        _exclusive_remove(client, [project], writer_id, reader_id)
+    known = set(_all_projects(all_profiles))
+    if all_projects:
+        targets = _all_projects(all_profiles)
+    else:
+        targets = list(dict.fromkeys(g.project for g in state.grants))
+
+    for project in targets:
+        if project in known:
+            _exclusive_remove(client, [project], writer_id, reader_id)
+        else:
+            # config定義外のプロジェクトには操作しない（docs/design.md「禁止事項」）。記録の削除のみ行う。
+            print(
+                f"警告: {project} は現在のconfigに存在しないため、"
+                "除名（API操作）をスキップしました（state.jsonの記録のみ削除します）",
+                file=sys.stderr,
+            )
         remaining = [g for g in state.grants if g.project != project]
         if len(remaining) != len(state.grants):
             state.grants = remaining
             if save is not None:
                 save()
-    # config定義外プロジェクトのgrant記録も含めて最終的に空にする（API操作はしない）。
+    # 全走査モードで残ったconfig定義外プロジェクトのgrant記録も含めて最終的に空にする（API操作はしない）。
     state.grants = []
     return make_unset_lines()
 

@@ -66,7 +66,14 @@ def build_parser() -> argparse.ArgumentParser:
         help="有効期限（例: 30s / 30m / 2h / 8h）。未指定時はconfigのdefault_durationを使用",
     )
 
-    subparsers.add_parser("release", help="config定義済みの全プロジェクトから仮想ユーザーを除名する")
+    release_parser = subparsers.add_parser(
+        "release", help="仮想ユーザーを除名する（既定はstate.jsonに記録された参加中プロジェクトのみ）"
+    )
+    release_parser.add_argument(
+        "--all",
+        action="store_true",
+        help="config定義済みの全プロジェクトを走査して除名する（state.json消失時などの回復用）",
+    )
     subparsers.add_parser("status", help="各プロファイルの参加状況・有効期限を表示する")
     subparsers.add_parser("list", help="configのプロファイル一覧を表示する")
     subparsers.add_parser("enforce", help="期限切れの付与だけを解除する（定期実行用）")
@@ -152,17 +159,24 @@ def _handle_switch(args: argparse.Namespace, config: Config, client: BacklogClie
             print(line)
 
 
-def _handle_release(config: Config, client: BacklogClient, state: State) -> None:
+def _handle_release(args: argparse.Namespace, config: Config, client: BacklogClient, state: State) -> None:
     all_profiles = list(config.profiles.values())
+    had_grants = bool(state.grants)
     lines = switcher.release(
         config.default,
         all_profiles,
         client,
         state,
         save=lambda: save_state(config.state_path, state),
+        all_projects=args.all,
     )
     save_state(config.state_path, state)
-    print("config定義済みの全プロジェクトから仮想ユーザーを除名しました", file=sys.stderr)
+    if args.all:
+        print("config定義済みの全プロジェクトから仮想ユーザーを除名しました", file=sys.stderr)
+    elif had_grants:
+        print("state.jsonに記録された参加中プロジェクトから仮想ユーザーを除名しました", file=sys.stderr)
+    else:
+        print("参加中の付与記録はありません（環境変数のunsetのみ行います）", file=sys.stderr)
     for line in lines:
         print(line)
 
@@ -215,7 +229,7 @@ def main() -> None:
             if args.command == "switch":
                 _handle_switch(args, config, client, state)
             elif args.command == "release":
-                _handle_release(config, client, state)
+                _handle_release(args, config, client, state)
             elif args.command == "status":
                 _handle_status(config, client, state)
             elif args.command == "enforce":

@@ -9,7 +9,7 @@
   5. switch test-admin → writer参加＋プロジェクト管理者フラグ付与（プラン制約なら記録して継続）
   6. status → 実際の参加状況と表示が一致
   7. TTL: switch test-read --duration 30s → 30秒待機 → enforce → reader除名
-  8. release → 両仮想ユーザーが除名（後片付けを兼ねる。CLI経由で検証）
+  8. release --all → 両仮想ユーザーが除名（後片付けを兼ねる。CLI経由で検証）
 
 実装方法:
   - 基本は `switcher.py` / `api.py` を直接Pythonから呼び出し、APIの結果を直接検証する。
@@ -25,7 +25,7 @@
     生の文字列を直接引数にすると失敗時のpytestトレースバックへ値が出力されるリスクがあるため、
     CLIサブプロセス呼び出しは常に `os.environ` を素通しする形にしている）。
   - 各ステップは直列実行（並列化しない）。
-  - 対象スペース（`BSWITCH_E2E_SPACE`）の実測レート制限は60 req/min。`errors[].code == 13`
+  - 対象スペース（`BSWITCH_E2E_SPACE`）のレート制限に備え、`errors[].code == 13`
     （TooManyRequestsError）を検出した場合はテスト側で待機してリトライする
     （`_call_with_retry` / `_run_cli`）。src側の冪等性設計とは無関係の、
     テスト実行の安定性のためだけの仕組み。
@@ -74,7 +74,7 @@ def _admins(client: BacklogClient, project: str) -> set[int]:
 def _call_with_retry[T](func: Callable[[], T], *, max_attempts: int = 3, backoff_seconds: float = 20.0) -> T:
     """`errors[].code == 13`（TooManyRequestsError）を検出した場合に待機してリトライする。
 
-    対象スペース（`BSWITCH_E2E_SPACE`）の実測レート制限（60 req/min）に対するテスト側の
+    対象スペース（`BSWITCH_E2E_SPACE`）のレート制限に対するテスト側の
     耐性であり、src側の「エラーを無視する冪等性」設計（api.pyのdelete系メソッド等）とは無関係。
     それ以外のエラーはそのまま送出する。
     """
@@ -385,7 +385,8 @@ class TestE2EFlow:
         master_client: BacklogClient,
         resolved_ids: dict[str, int],
     ) -> None:
-        result = _run_cli(["release"], e2e_config.path)
+        # 後片付けを兼ねるため、grants記録に依存しない全プロジェクトスイープ（--all）を使う。
+        result = _run_cli(["release", "--all"], e2e_config.path)
         assert result.returncode == 0, (
             f"release がexit {result.returncode} で終了しました "
             f"(stderr末尾: {result.stderr[-300:] if result.stderr else ''})"
