@@ -446,7 +446,7 @@ def get_status(
         elif grant.expires_at is None:
             expires_display = "無期限"
         else:
-            expires_display = grant.expires_at
+            expires_display = datetime.fromisoformat(grant.expires_at).astimezone().isoformat()
 
         rows.append((profile.name, profile.project, actual, expires_display))
 
