@@ -24,7 +24,7 @@ def test_make_export_lines_single_project_contains_all_four_variables() -> None:
     lines = shell.make_export_lines("dummy-key-value", "test-space.backlog.com", "MY_PROJECT")
 
     assert "export BACKLOG_API_KEY=dummy-key-value" in lines
-    assert "export BACKLOG_SPACE=https://test-space.backlog.com" in lines
+    assert "export BACKLOG_SPACE=test-space.backlog.com" in lines
     assert "export BACKLOG_DOMAIN=test-space.backlog.com" in lines
     assert "export BACKLOG_PROJECT=MY_PROJECT" in lines
     assert len(lines) == 4
