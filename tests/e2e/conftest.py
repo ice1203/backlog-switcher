@@ -158,11 +158,11 @@ class _RedactedSecret:
     """秘密値をラップし、pytestの失敗トレースバック（引数一覧のrepr表示）に生値が
     出力されないようにするための小さなラッパー。
 
-    初回実機E2E実行（2026-07-15）で、`master_api_key` をテスト関数の引数として直接
-    受け取っていたテストが失敗した際、pytestのデフォルトlong形式トレースバックが
-    失敗フレームの引数値をそのまま `repr()` して出力し、APIキーの生値がツール出力に
-    露出する事故が発生した。この再発防止のため、秘密値を保持するフィクスチャは
-    常にこのラッパー経由で受け渡す（実値が必要な箇所でのみ明示的に `.reveal()` する）。
+    `master_api_key` をテスト関数の引数として直接受け取っていたテストが失敗すると、
+    pytestのデフォルトlong形式トレースバックが失敗フレームの引数値をそのまま
+    `repr()` して出力し、APIキーの生値がツール出力に露出するおそれがある。
+    この防止のため、秘密値を保持するフィクスチャは常にこのラッパー経由で受け渡す
+    （実値が必要な箇所でのみ明示的に `.reveal()` する）。
     """
 
     __slots__ = ("_value",)
@@ -210,11 +210,11 @@ def master_client(e2e_config: Config, master_api_key: _RedactedSecret) -> Iterat
 
 @pytest.fixture(autouse=True)
 def _pace_requests() -> Iterator[None]:
-    """対象スペースのレート制限（60 req/min、実測値）に配慮し、テスト間隔を空ける。
+    """対象スペースのレート制限に配慮し、テスト間隔を空ける。
 
-    初回実機E2E実行（2026-07-15）で、8ステップを無間隔で連続実行した結果
-    `HTTP 429 Too Many Requests` を受け、`release` のexclusive-remove（エラーを
-    無視する設計）が見かけ上成功して後片付け漏れを起こす事故があったための対策。
+    8ステップを無間隔で連続実行すると `HTTP 429 Too Many Requests` を受け、
+    `release` のexclusive-remove（エラーを無視する設計）が見かけ上成功して
+    後片付け漏れを起こすおそれがあるための対策。
     """
     yield
     if e2e_enabled():

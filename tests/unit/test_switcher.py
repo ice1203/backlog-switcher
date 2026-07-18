@@ -686,6 +686,65 @@ def test_release_removes_participating_users(
     assert state.grants == []
 
 
+def test_release_default_only_touches_granted_projects(
+    fake_client: FakeBacklogClient, numeric_config: DefaultConfig
+) -> None:
+    """既定のreleaseはgrants記録のあるプロジェクトのみ除名し、config全走査はしない。"""
+    all_profiles = [
+        Profile(name="a", project="P1", permission="write"),
+        Profile(name="b", project="P2", permission="read"),
+    ]
+    fake_client.members["P1"] = {200}
+    fake_client.members["P2"] = {100}  # grants記録なしの残留参加（state.json消失を模擬）
+    state = State(grants=[Grant(profile="a", project="P1", user_id=200, permission="write", expires_at=None)])
+
+    switcher.release(numeric_config, all_profiles, fake_client, state)
+
+    assert fake_client.members["P1"] == set()
+    assert fake_client.members["P2"] == {100}
+    assert not any(call[1] == "P2" for call in fake_client.call_log)
+    assert state.grants == []
+
+
+def test_release_default_with_no_grants_makes_no_api_calls(
+    fake_client: FakeBacklogClient, numeric_config: DefaultConfig
+) -> None:
+    """付与記録が0件なら既定のreleaseはAPIを一切呼ばない（レートリミット消費なし）。"""
+    all_profiles = [Profile(name="w", project="P1", permission="write")]
+
+    lines = switcher.release(numeric_config, all_profiles, fake_client, State())
+
+    assert fake_client.call_log == []
+    assert lines == ["unset BACKLOG_API_KEY BACKLOG_SPACE BACKLOG_DOMAIN BACKLOG_PROJECT"]
+
+
+def test_release_default_skips_api_for_project_missing_from_config(
+    fake_client: FakeBacklogClient, numeric_config: DefaultConfig, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """grants記録のプロジェクトがconfigに存在しない場合、API操作せず記録のみ削除する。"""
+    state = State(grants=[Grant(profile="gone", project="GONE", user_id=200, permission="write", expires_at=None)])
+
+    switcher.release(numeric_config, [], fake_client, state)
+
+    assert fake_client.call_log == []
+    assert state.grants == []
+    assert "GONE" in capsys.readouterr().err
+
+
+def test_release_all_sweeps_all_config_projects(fake_client: FakeBacklogClient, numeric_config: DefaultConfig) -> None:
+    """all_projects=True はgrants記録がなくてもconfig定義済み全プロジェクトを走査する（回復経路）。"""
+    all_profiles = [
+        Profile(name="a", project="P1", permission="write"),
+        Profile(name="b", project="P2", permission="read"),
+    ]
+    fake_client.members["P2"] = {100}  # 記録なしの残留参加（state.json消失を模擬）
+
+    switcher.release(numeric_config, all_profiles, fake_client, State(), all_projects=True)
+
+    assert fake_client.members["P2"] == set()
+    assert len(fake_client.call_log) == 8  # 2プロジェクト x (user2 + admin2)
+
+
 def test_add_user_idempotent_skips_call_when_already_member(fake_client: FakeBacklogClient) -> None:
     fake_client.members["P1"] = {100}
 
