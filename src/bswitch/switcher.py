@@ -315,6 +315,12 @@ def switch(
                     )
                     effective = "write"
                     grant.permission = "write"
+                    write_profile = next(
+                        (p for p in all_profiles if p.project == profile.project and p.permission == "write"),
+                        None,
+                    )
+                    if write_profile is not None:
+                        grant.profile = write_profile.name
                     _save()
 
         effective_permissions.append(effective)
