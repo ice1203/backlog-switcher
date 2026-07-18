@@ -851,6 +851,36 @@ def test_get_status_reflects_actual_membership(
     assert "write" in text
 
 
+def test_get_status_expires_displayed_in_local_tz(
+    fake_client: FakeBacklogClient, numeric_config: DefaultConfig, state: State
+) -> None:
+    """expires_atのUTC文字列がローカルTZに変換されて表示される。"""
+    utc_str = "2026-07-19T07:03:30+00:00"
+    profile = Profile(name="w", project="P1", permission="write")
+    state.grants = [Grant(profile="w", project="P1", user_id=200, permission="write", expires_at=utc_str)]
+    fake_client.members["P1"] = {200}
+
+    text = switcher.get_status([profile], numeric_config, fake_client, state)
+
+    expected = datetime.fromisoformat(utc_str).astimezone().isoformat()
+    assert expected in text
+    assert utc_str not in text
+
+
+def test_get_status_expires_none_shows_dash(
+    fake_client: FakeBacklogClient, numeric_config: DefaultConfig, state: State
+) -> None:
+    """grantがないプロファイルのEXPIRESは"-"と表示される。"""
+    profile = Profile(name="w", project="P1", permission="write")
+    fake_client.members["P1"] = set()
+
+    text = switcher.get_status([profile], numeric_config, fake_client, state)
+
+    lines = text.strip().split("\n")
+    data_line = lines[-1]
+    assert data_line.strip().endswith("-")
+
+
 def test_get_status_no_profiles_message(
     fake_client: FakeBacklogClient, numeric_config: DefaultConfig, state: State
 ) -> None:
