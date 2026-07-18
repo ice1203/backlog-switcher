@@ -58,16 +58,58 @@ def test_default_duration_is_optional(tmp_path: Path) -> None:
     assert config.default.default_duration is None
 
 
-@pytest.mark.parametrize(
-    "missing_key",
-    ["space", "writer_user", "reader_user", "writer_api_key_ref", "reader_api_key_ref"],
-)
-def test_missing_required_default_field_raises_configerror(tmp_path: Path, missing_key: str) -> None:
-    lines = [line for line in VALID_INI.splitlines() if not line.startswith(f"{missing_key} ")]
+def test_missing_space_raises_configerror(tmp_path: Path) -> None:
+    lines = [line for line in VALID_INI.splitlines() if not line.startswith("space ")]
     path = _write(tmp_path, "\n".join(lines))
 
     with pytest.raises(ConfigError):
         load_config(path)
+
+
+def test_writer_pair_incomplete_raises_configerror(tmp_path: Path) -> None:
+    lines = [line for line in VALID_INI.splitlines() if not line.startswith("writer_api_key_ref ")]
+    path = _write(tmp_path, "\n".join(lines))
+
+    with pytest.raises(ConfigError, match="ペアで設定"):
+        load_config(path)
+
+
+def test_reader_pair_incomplete_raises_configerror(tmp_path: Path) -> None:
+    lines = [line for line in VALID_INI.splitlines() if not line.startswith("reader_api_key_ref ")]
+    path = _write(tmp_path, "\n".join(lines))
+
+    with pytest.raises(ConfigError, match="ペアで設定"):
+        load_config(path)
+
+
+def test_neither_writer_nor_reader_raises_configerror(tmp_path: Path) -> None:
+    lines = [
+        line
+        for line in VALID_INI.splitlines()
+        if not line.startswith(("writer_user ", "writer_api_key_ref ", "reader_user ", "reader_api_key_ref "))
+    ]
+    path = _write(tmp_path, "\n".join(lines))
+
+    with pytest.raises(ConfigError, match="少なくとも一方"):
+        load_config(path)
+
+
+def test_writer_only_config_is_valid(tmp_path: Path) -> None:
+    lines = [line for line in VALID_INI.splitlines() if not line.startswith(("reader_user ", "reader_api_key_ref "))]
+    path = _write(tmp_path, "\n".join(lines))
+
+    config = load_config(path)
+    assert config.default.writer_user == "svc-writer@example.com"
+    assert config.default.reader_user is None
+
+
+def test_reader_only_config_is_valid(tmp_path: Path) -> None:
+    lines = [line for line in VALID_INI.splitlines() if not line.startswith(("writer_user ", "writer_api_key_ref "))]
+    path = _write(tmp_path, "\n".join(lines))
+
+    config = load_config(path)
+    assert config.default.reader_user == "svc-reader@example.com"
+    assert config.default.writer_user is None
 
 
 def test_missing_project_in_profile_raises_configerror(tmp_path: Path) -> None:

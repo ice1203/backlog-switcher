@@ -52,8 +52,8 @@ def test_switch_exclusive_removal_precedes_add(
 
     expected_removal_phase = [
         ("delete_project_user", "PROJ_B", 200),
-        ("delete_project_user", "PROJ_B", 100),
         ("delete_project_administrator", "PROJ_B", 200),
+        ("delete_project_user", "PROJ_B", 100),
         ("delete_project_administrator", "PROJ_B", 100),
     ]
     assert fake_client.call_log[: len(expected_removal_phase)] == expected_removal_phase
@@ -840,3 +840,53 @@ def test_get_status_no_profiles_message(
     text = switcher.get_status([], numeric_config, fake_client, state)
 
     assert "プロファイルが定義されていません" in text
+
+
+# ---------------------------------------------------------------------------
+# writer/reader未設定時のバリデーション
+# ---------------------------------------------------------------------------
+
+
+def test_switch_read_profile_without_reader_config_raises(fake_client: FakeBacklogClient, state: State) -> None:
+    config = DefaultConfig(
+        space="test-space.backlog.com",
+        writer_user="200",
+        writer_api_key_ref="op://MyVault/backlog-svc-writer/credential",
+    )
+    profile = Profile(name="r", project="P1", permission="read")
+
+    with pytest.raises(switcher.SwitcherError, match="reader_user"):
+        switcher.switch([profile], [profile], config, None, fake_client, state)
+
+    assert fake_client.call_log == []
+
+
+def test_switch_write_profile_without_writer_config_raises(fake_client: FakeBacklogClient, state: State) -> None:
+    config = DefaultConfig(
+        space="test-space.backlog.com",
+        reader_user="100",
+        reader_api_key_ref="op://MyVault/backlog-svc-reader/credential",
+    )
+    profile = Profile(name="w", project="P1", permission="write")
+
+    with pytest.raises(switcher.SwitcherError, match="writer_user"):
+        switcher.switch([profile], [profile], config, None, fake_client, state)
+
+    assert fake_client.call_log == []
+
+
+def test_switch_writer_only_config_works_for_write_permission(
+    fake_client: FakeBacklogClient, state: State, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("BACKLOG_WRITER_API_KEY", WRITER_KEY)
+    config = DefaultConfig(
+        space="test-space.backlog.com",
+        writer_user="200",
+        writer_api_key_ref="op://MyVault/backlog-svc-writer/credential",
+    )
+    profile = Profile(name="w", project="P1", permission="write")
+
+    lines, overall = switcher.switch([profile], [profile], config, None, fake_client, state)
+
+    assert overall == "write"
+    assert state.grants[0].user_id == 200
