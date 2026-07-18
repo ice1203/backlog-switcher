@@ -120,15 +120,18 @@ def test_delete_project_user_auth_error_raises_backlogapierror() -> None:
     assert excinfo.value.code == 11
 
 
-def test_delete_project_user_permission_error_raises_permission_error() -> None:
-    """権限エラー（code 5）は無視せず PermissionError を送出する。"""
+def test_delete_project_user_permission_error_returns_none() -> None:
+    """権限エラー（code 5）は排他除名スイープを止めないよう無視してNoneを返す。
+
+    マスターユーザーに除名権限のないプロジェクトでスイープが止まると
+    switch自体が一切できなくなるため、スキップして継続する。
+    """
 
     def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(403, json={"errors": [{"message": "権限がありません", "code": 5}]})
 
     client = _client_with_handler(handler)
-    with pytest.raises(ApiPermissionError):
-        client.delete_project_user("PROJ", 1)
+    assert client.delete_project_user("PROJ", 1) is None
 
 
 def test_delete_project_user_unparseable_body_raises_backlogapierror() -> None:
@@ -213,15 +216,14 @@ def test_delete_project_administrator_rate_limit_raises_backlogapierror() -> Non
     assert excinfo.value.code == 13
 
 
-def test_delete_project_administrator_permission_error_raises_permission_error() -> None:
-    """権限エラー（code 5）は無視せず PermissionError を送出する。"""
+def test_delete_project_administrator_permission_error_returns_none() -> None:
+    """権限エラー（code 5）は排他除名スイープを止めないよう無視してNoneを返す。"""
 
     def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(403, json={"errors": [{"message": "権限がありません", "code": 5}]})
 
     client = _client_with_handler(handler)
-    with pytest.raises(ApiPermissionError):
-        client.delete_project_administrator("PROJ", 1)
+    assert client.delete_project_administrator("PROJ", 1) is None
 
 
 def test_delete_project_administrator_unparseable_body_raises_backlogapierror() -> None:
