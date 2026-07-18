@@ -111,6 +111,21 @@ def test_shell_init_does_not_require_master_key(
     assert "bswitch()" in captured.out
 
 
+def test_bare_bswitch_defaults_to_switch(monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
+    """引数なしの `bswitch` は `bswitch switch`（対話選択モード）として動作する。"""
+    monkeypatch.setenv(MASTER_KEY_ENV, "dummy-master-key")
+    fake = FakeBacklogClient()
+    monkeypatch.setattr(cli, "BacklogClient", lambda *_a, **_kw: fake)
+    monkeypatch.setattr(sys, "argv", ["bswitch"])
+
+    monkeypatch.setattr(cli.ui, "select_profile", lambda profiles, **_kw: profiles[0])
+
+    cli.main()
+
+    captured = capsys.readouterr()
+    assert "export BACKLOG_API_KEY=" in captured.out
+
+
 def test_switch_end_to_end_with_fake_client(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:

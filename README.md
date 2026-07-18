@@ -141,7 +141,7 @@ bswitch release
 
 ```bash
 # どのプロファイル使うか迷ったら → 対話UIで選べる
-bswitch switch
+bswitch              # 引数なしで実行すると対話選択モード（bswitch switch と同じ）
 
 # 期限付き（2時間後に自動解除対象になる）
 bswitch switch customer-a-read --duration 2h
@@ -166,6 +166,8 @@ bswitch enforce
 
 仮想ユーザーを対象プロジェクトへ参加させます（排他動作: 先に前回付与分（state.jsonに記録されたプロジェクト）から仮想ユーザー2人を除名してから、選択分を参加させます）。
 
+引数なしの `bswitch` は `bswitch switch`（対話選択モード）のショートカットとして動作します。
+
 ```bash
 # プロファイル名を直接指定
 bswitch switch customer-a
@@ -174,7 +176,8 @@ bswitch switch customer-a
 bswitch switch customer-b customer-c
 
 # 引数なし: インタラクティブ選択UI（fuzzy filter付き単一選択）
-bswitch switch
+bswitch              # ショートカット
+bswitch switch       # 同じ動作
 
 # --multi: チェックボックス式の複数選択UI
 bswitch switch --multi

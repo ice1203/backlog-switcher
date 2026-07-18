@@ -191,6 +191,8 @@ def _handle_status(config: Config, client: BacklogClient, state: State) -> None:
 
 def main() -> None:
     """CLIエントリポイント（`pyproject.toml` の `project.scripts` から呼ばれる）。"""
+    if len(sys.argv) == 1:
+        sys.argv.append("switch")
     args = build_parser().parse_args()
 
     if args.command == "shell-init":

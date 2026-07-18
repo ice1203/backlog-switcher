@@ -20,10 +20,10 @@ DEFAULT_CONFIG_PATH = Path.home() / ".config" / "backlog-switcher" / "config"
 SAMPLE_CONFIG = """\
 [default]
 space = your-space.backlog.jp      ; スペースのホスト名
-writer_user = svc-writer@example.com   ; 制限なし仮想ユーザー（メールアドレスまたは数値ID）
-reader_user = svc-reader@example.com   ; 「課題の閲覧のみ」仮想ユーザー（同上）
+writer_user = svc-writer@example.com   ; write/admin用仮想ユーザー（メールアドレスまたは数値ID）
 writer_api_key_ref = op://MyVault/backlog-svc-writer/credential  ; 1Password参照
-reader_api_key_ref = op://MyVault/backlog-svc-reader/credential
+reader_user = svc-reader@example.com   ; read用仮想ユーザー（省略可。省略時はread権限が使用不可）
+reader_api_key_ref = op://MyVault/backlog-svc-reader/credential  ; 省略可
 default_duration = 8h       ; 任意。--duration未指定時の有効期限（未設定なら無期限）
 
 [profile customer-a]
@@ -88,10 +88,28 @@ def _parse_default(parser: configparser.ConfigParser) -> DefaultConfig:
         raise ConfigError("[default] セクションが見つかりません")
     section = parser["default"]
     space = _require(section, "space", "[default]")
-    writer_user = _require(section, "writer_user", "[default]")
-    reader_user = _require(section, "reader_user", "[default]")
-    writer_api_key_ref = _require(section, "writer_api_key_ref", "[default]")
-    reader_api_key_ref = _require(section, "reader_api_key_ref", "[default]")
+
+    def _optional(key: str) -> str | None:
+        value = section.get(key)
+        if value is None or value.strip() == "":
+            return None
+        return value.strip()
+
+    writer_user = _optional("writer_user")
+    writer_api_key_ref = _optional("writer_api_key_ref")
+    reader_user = _optional("reader_user")
+    reader_api_key_ref = _optional("reader_api_key_ref")
+
+    if bool(writer_user) != bool(writer_api_key_ref):
+        raise ConfigError("[default]: writer_user と writer_api_key_ref はペアで設定してください")
+    if bool(reader_user) != bool(reader_api_key_ref):
+        raise ConfigError("[default]: reader_user と reader_api_key_ref はペアで設定してください")
+    if writer_user is None and reader_user is None:
+        raise ConfigError(
+            "[default]: writer_user/writer_api_key_ref または reader_user/reader_api_key_ref の"
+            "少なくとも一方を設定してください"
+        )
+
     default_duration_raw = section.get("default_duration")
     default_duration = default_duration_raw.strip() if default_duration_raw else None
     return DefaultConfig(

@@ -109,29 +109,36 @@ def _find_user_id_by_email(users: list[dict[str, object]], email: str) -> int:
     )
 
 
-def resolve_user_ids(config: DefaultConfig, client: BacklogClient, state: State) -> tuple[int, int]:
+def resolve_user_ids(config: DefaultConfig, client: BacklogClient, state: State) -> tuple[int | None, int | None]:
     """writer_user / reader_user を数値IDに解決する（read-onlyな操作。副作用なし）。
 
+    configで未設定のユーザーはNoneを返す。
     数値ID直接指定・キャッシュ済みの場合はAPIを呼ばない。
     いずれかが未解決の場合のみ `GET /api/v2/users` をまとめて1回だけ呼ぶ。
     解決結果は `state.user_id_cache` に書き込む（永続化は呼び出し側の責務）。
     """
 
-    def _from_cache_or_numeric(ref: str) -> int | None:
+    def _from_cache_or_numeric(ref: str | None) -> int | None:
+        if ref is None:
+            return None
         if _is_numeric_id(ref):
             return int(ref)
         return state.user_id_cache.get(ref)
 
     writer_id = _from_cache_or_numeric(config.writer_user)
     reader_id = _from_cache_or_numeric(config.reader_user)
-    if writer_id is not None and reader_id is not None:
+
+    need_api = (config.writer_user is not None and writer_id is None) or (
+        config.reader_user is not None and reader_id is None
+    )
+    if not need_api:
         return writer_id, reader_id
 
     users = client.get_users()
-    if writer_id is None:
+    if config.writer_user is not None and writer_id is None:
         writer_id = _find_user_id_by_email(users, config.writer_user)
         state.user_id_cache[config.writer_user] = writer_id
-    if reader_id is None:
+    if config.reader_user is not None and reader_id is None:
         reader_id = _find_user_id_by_email(users, config.reader_user)
         state.user_id_cache[config.reader_user] = reader_id
     return writer_id, reader_id
@@ -162,19 +169,22 @@ def _ensure_project_administrator(client: BacklogClient, project: str, user_id: 
     return result is not None
 
 
-def _exclusive_remove(client: BacklogClient, projects: list[str], writer_id: int, reader_id: int) -> None:
+def _exclusive_remove(client: BacklogClient, projects: list[str], writer_id: int | None, reader_id: int | None) -> None:
     """指定されたプロジェクト群から両仮想ユーザー（プロジェクトユーザー・プロジェクト管理者）を除名する。
 
+    writer_id / reader_id が None の場合はその側の除名をスキップする。
     api.py の delete系メソッドは「対象が元々参加/管理者でない」（code 6: NoResourceError）と
     「マスターユーザーに除名権限がない」（code 5: UnauthorizedOperationError）の場合のみ
     エラーを無視して None を返すため、その意味でのみ冪等。レートリミット・認証エラー等は
     BacklogApiError として送出され、この関数の呼び出し元に伝播する。
     """
     for project in projects:
-        client.delete_project_user(project, writer_id)
-        client.delete_project_user(project, reader_id)
-        client.delete_project_administrator(project, writer_id)
-        client.delete_project_administrator(project, reader_id)
+        if writer_id is not None:
+            client.delete_project_user(project, writer_id)
+            client.delete_project_administrator(project, writer_id)
+        if reader_id is not None:
+            client.delete_project_user(project, reader_id)
+            client.delete_project_administrator(project, reader_id)
 
 
 def switch(
@@ -214,6 +224,12 @@ def switch(
     if "read" in permissions and (permissions - {"read"}):
         raise SwitcherError("read権限とwrite/admin権限を同時に選択することはできません（write + admin の混在は可）")
 
+    # 1b. 選択されたpermissionに必要なユーザーが設定されているか検証
+    if "read" in permissions and config.reader_user is None:
+        raise SwitcherError("read権限のプロファイルが選択されましたが、reader_user が設定されていません")
+    if permissions & {"write", "admin"} and config.writer_user is None:
+        raise SwitcherError("write/admin権限のプロファイルが選択されましたが、writer_user が設定されていません")
+
     # 2. --duration / default_duration の形式検証（破壊的操作の前にfail fastする）
     expires_at = _compute_expires_at(duration, config.default_duration)
 
@@ -229,7 +245,8 @@ def switch(
     #    同一プロファイルの再実行（新しいターミナルでの再switch・期限更新）を0コールにするため。
     continuing: dict[str, Grant] = {}
     for profile in profiles:
-        uid = reader_id if profile.permission == "read" else writer_id
+        # step 1bで該当ユーザーの存在を検証済み
+        uid: int = reader_id if profile.permission == "read" else writer_id  # type: ignore[assignment]
         for g in state.grants:
             if g.project == profile.project and g.user_id == uid:
                 continuing[profile.project] = g
@@ -261,7 +278,8 @@ def switch(
     effective_permissions: list[str] = []
 
     for profile in profiles:
-        granted_user_id = reader_id if profile.permission == "read" else writer_id
+        # step 1bで該当ユーザーの存在を検証済み
+        granted_user_id: int = reader_id if profile.permission == "read" else writer_id  # type: ignore[assignment]
         prev = continuing.get(profile.project)
         if prev is None:
             _add_user_idempotent(client, profile.project, granted_user_id)
@@ -288,7 +306,7 @@ def switch(
             if prev is not None and prev.permission == "admin":
                 pass  # 前回付与済みの管理者権限を継続（API呼び出しなし）
             else:
-                ok = _ensure_project_administrator(client, profile.project, writer_id)
+                ok = _ensure_project_administrator(client, profile.project, granted_user_id)
                 if not ok:
                     print(
                         f"警告: {profile.project} でプロジェクト管理者権限を付与できませんでした。"
@@ -409,9 +427,9 @@ def get_status(
     rows: list[tuple[str, str, str, str]] = []
     for profile in all_profiles:
         current_members = members(profile.project)
-        if writer_id in current_members:
+        if writer_id is not None and writer_id in current_members:
             actual = "admin" if writer_id in admins(profile.project) else "write"
-        elif reader_id in current_members:
+        elif reader_id is not None and reader_id in current_members:
             actual = "read"
         else:
             actual = "-"
