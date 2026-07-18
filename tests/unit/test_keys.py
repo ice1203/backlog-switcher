@@ -116,3 +116,27 @@ def test_resolve_api_key_write_and_admin_use_writer_key(monkeypatch: pytest.Monk
 def test_resolve_api_key_unknown_permission_raises_valueerror() -> None:
     with pytest.raises(ValueError, match="owner"):
         keys.resolve_api_key("owner", _config())
+
+
+def test_resolve_writer_key_raises_when_ref_is_none(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv(keys.ENV_WRITER_API_KEY, raising=False)
+    config = DefaultConfig(
+        space="test-space.backlog.com",
+        reader_user="100",
+        reader_api_key_ref="op://MyVault/backlog-svc-reader/credential",
+    )
+
+    with pytest.raises(keys.KeyResolutionError, match="writer用APIキーが設定されていません"):
+        keys.resolve_writer_key(config)
+
+
+def test_resolve_reader_key_raises_when_ref_is_none(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv(keys.ENV_READER_API_KEY, raising=False)
+    config = DefaultConfig(
+        space="test-space.backlog.com",
+        writer_user="200",
+        writer_api_key_ref="op://MyVault/backlog-svc-writer/credential",
+    )
+
+    with pytest.raises(keys.KeyResolutionError, match="reader用APIキーが設定されていません"):
+        keys.resolve_reader_key(config)

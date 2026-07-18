@@ -22,10 +22,10 @@ class DefaultConfig:
     """configの `[default]` セクションから構築される既定設定。"""
 
     space: str
-    writer_user: str
-    reader_user: str
-    writer_api_key_ref: str
-    reader_api_key_ref: str
+    writer_user: str | None = None
+    reader_user: str | None = None
+    writer_api_key_ref: str | None = None
+    reader_api_key_ref: str | None = None
     default_duration: str | None = None
 
 

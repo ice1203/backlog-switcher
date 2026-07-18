@@ -66,6 +66,11 @@ def resolve_writer_key(config: DefaultConfig) -> str:
     env_value = os.environ.get(ENV_WRITER_API_KEY)
     if env_value:
         return env_value
+    if config.writer_api_key_ref is None:
+        raise KeyResolutionError(
+            "writer用APIキーが設定されていません。"
+            f"configの writer_api_key_ref または環境変数 {ENV_WRITER_API_KEY} を設定してください。"
+        )
     return _read_from_1password(config.writer_api_key_ref, role="writer")
 
 
@@ -74,6 +79,11 @@ def resolve_reader_key(config: DefaultConfig) -> str:
     env_value = os.environ.get(ENV_READER_API_KEY)
     if env_value:
         return env_value
+    if config.reader_api_key_ref is None:
+        raise KeyResolutionError(
+            "reader用APIキーが設定されていません。"
+            f"configの reader_api_key_ref または環境変数 {ENV_READER_API_KEY} を設定してください。"
+        )
     return _read_from_1password(config.reader_api_key_ref, role="reader")
 
 
