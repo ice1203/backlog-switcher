@@ -5,6 +5,7 @@ BacklogClientは `cli.BacklogClient` をFakeBacklogClientへ差し替えて実HT
 
 from __future__ import annotations
 
+import json
 import sys
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -55,7 +56,7 @@ def test_missing_master_key_exits_with_error(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     monkeypatch.delenv(MASTER_KEY_ENV, raising=False)
-    monkeypatch.setattr(sys, "argv", ["bswitch", "list"])
+    monkeypatch.setattr(sys, "argv", ["bswitch", "status"])
 
     with pytest.raises(SystemExit) as excinfo:
         cli.main()
@@ -296,3 +297,135 @@ def test_delayed_enforcement_triggers_on_status_command_too(
     captured = capsys.readouterr()
     assert "期限切れの付与を1件解除しました" in captured.err
     assert load_state(state_path).grants == []
+
+
+# --- bswitch check のテスト ---
+
+
+def test_check_no_grants_returns_empty_array(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setattr(sys, "argv", ["bswitch", "check"])
+
+    cli.main()
+
+    captured = capsys.readouterr()
+    assert json.loads(captured.out) == []
+    assert captured.err == ""
+
+
+def test_check_read_grant_matching_key_returns_ok(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], config_path: Path
+) -> None:
+    state_path = config_path.parent / "state.json"
+    save_state(
+        state_path,
+        State(
+            grants=[Grant(profile="test-read", project="MY_PROJECT", user_id=100, permission="read", expires_at=None)]
+        ),
+    )
+    monkeypatch.setenv("BACKLOG_API_KEY", "reader-dummy-key")
+    monkeypatch.setattr(sys, "argv", ["bswitch", "check"])
+
+    cli.main()
+
+    result = json.loads(capsys.readouterr().out)
+    assert result == [{"profile": "test-read", "permission": "read", "status": "OK"}]
+
+
+def test_check_read_grant_mismatched_key_returns_mismatch(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], config_path: Path
+) -> None:
+    state_path = config_path.parent / "state.json"
+    save_state(
+        state_path,
+        State(
+            grants=[Grant(profile="test-read", project="MY_PROJECT", user_id=100, permission="read", expires_at=None)]
+        ),
+    )
+    monkeypatch.setenv("BACKLOG_API_KEY", "wrong-key")
+    monkeypatch.setattr(sys, "argv", ["bswitch", "check"])
+
+    cli.main()
+
+    result = json.loads(capsys.readouterr().out)
+    assert result == [{"profile": "test-read", "permission": "read", "status": "MISMATCH"}]
+
+
+def test_check_no_backlog_api_key_returns_not_set(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], config_path: Path
+) -> None:
+    state_path = config_path.parent / "state.json"
+    save_state(
+        state_path,
+        State(
+            grants=[Grant(profile="test-read", project="MY_PROJECT", user_id=100, permission="read", expires_at=None)]
+        ),
+    )
+    monkeypatch.delenv("BACKLOG_API_KEY", raising=False)
+    monkeypatch.setattr(sys, "argv", ["bswitch", "check"])
+
+    cli.main()
+
+    result = json.loads(capsys.readouterr().out)
+    assert result == [{"profile": "test-read", "permission": "read", "status": "NOT_SET"}]
+
+
+def test_check_write_grant_matching_key_returns_ok(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], config_path: Path
+) -> None:
+    state_path = config_path.parent / "state.json"
+    save_state(
+        state_path,
+        State(
+            grants=[Grant(profile="test-write", project="MY_PROJECT", user_id=200, permission="write", expires_at=None)]
+        ),
+    )
+    monkeypatch.setenv("BACKLOG_API_KEY", "writer-dummy-key")
+    monkeypatch.setattr(sys, "argv", ["bswitch", "check"])
+
+    cli.main()
+
+    result = json.loads(capsys.readouterr().out)
+    assert result == [{"profile": "test-write", "permission": "write", "status": "OK"}]
+
+
+def test_check_works_without_master_api_key(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.delenv(MASTER_KEY_ENV, raising=False)
+    monkeypatch.setattr(sys, "argv", ["bswitch", "check"])
+
+    cli.main()
+
+    assert json.loads(capsys.readouterr().out) == []
+
+
+def test_check_op_read_failure_exits_1(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], config_path: Path
+) -> None:
+    from bswitch import keys as bswitch_keys
+    from bswitch.keys import KeyResolutionError
+
+    state_path = config_path.parent / "state.json"
+    save_state(
+        state_path,
+        State(
+            grants=[Grant(profile="test-read", project="MY_PROJECT", user_id=100, permission="read", expires_at=None)]
+        ),
+    )
+    monkeypatch.delenv("BACKLOG_READER_API_KEY", raising=False)
+
+    def fail_op_read(*args: object, **kwargs: object) -> str:
+        raise KeyResolutionError("op read失敗")
+
+    monkeypatch.setattr(bswitch_keys, "_read_from_1password", fail_op_read)
+    monkeypatch.setattr(sys, "argv", ["bswitch", "check"])
+
+    with pytest.raises(SystemExit) as excinfo:
+        cli.main()
+
+    assert excinfo.value.code == 1
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert "エラー" in captured.err
