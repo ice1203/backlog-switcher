@@ -310,8 +310,8 @@ def test_check_no_grants_returns_empty_array(
     cli.main()
 
     captured = capsys.readouterr()
-    assert json.loads(captured.out) == []
-    assert captured.err == ""
+    assert captured.out == ""
+    assert json.loads(captured.err) == []
 
 
 def test_check_read_grant_matching_key_returns_ok(
@@ -329,7 +329,7 @@ def test_check_read_grant_matching_key_returns_ok(
 
     cli.main()
 
-    result = json.loads(capsys.readouterr().out)
+    result = json.loads(capsys.readouterr().err)
     assert result == [{"profile": "test-read", "permission": "read", "status": "OK"}]
 
 
@@ -348,7 +348,7 @@ def test_check_read_grant_mismatched_key_returns_mismatch(
 
     cli.main()
 
-    result = json.loads(capsys.readouterr().out)
+    result = json.loads(capsys.readouterr().err)
     assert result == [{"profile": "test-read", "permission": "read", "status": "MISMATCH"}]
 
 
@@ -367,7 +367,7 @@ def test_check_no_backlog_api_key_returns_not_set(
 
     cli.main()
 
-    result = json.loads(capsys.readouterr().out)
+    result = json.loads(capsys.readouterr().err)
     assert result == [{"profile": "test-read", "permission": "read", "status": "NOT_SET"}]
 
 
@@ -386,7 +386,7 @@ def test_check_write_grant_matching_key_returns_ok(
 
     cli.main()
 
-    result = json.loads(capsys.readouterr().out)
+    result = json.loads(capsys.readouterr().err)
     assert result == [{"profile": "test-write", "permission": "write", "status": "OK"}]
 
 
@@ -398,7 +398,7 @@ def test_check_works_without_master_api_key(
 
     cli.main()
 
-    assert json.loads(capsys.readouterr().out) == []
+    assert json.loads(capsys.readouterr().err) == []
 
 
 def test_check_op_read_failure_exits_1(

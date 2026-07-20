@@ -117,7 +117,7 @@ def _handle_list(config: Config) -> None:
 
 def _handle_check(config: Config, state: State) -> None:
     if not state.grants:
-        print("[]")
+        print("[]", file=sys.stderr)
         return
     # BACKLOG_API_KEY は bswitch の出力専用だが、check は「現在値が期待キーと一致するか」を
     # 目的とするため例外的に読む。
@@ -136,7 +136,7 @@ def _handle_check(config: Config, state: State) -> None:
         else:
             status = "MISMATCH"
         results.append({"profile": grant.profile, "permission": grant.permission, "status": status})
-    print(json.dumps(results, ensure_ascii=False))
+    print(json.dumps(results, ensure_ascii=False), file=sys.stderr)
 
 
 def _resolve_selected_profiles(args: argparse.Namespace, config: Config, all_profiles: list[Profile]) -> list[Profile]:
