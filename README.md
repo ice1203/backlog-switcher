@@ -355,6 +355,21 @@ exec uv run --project /path/to/backlog-switcher bswitch enforce
 
 plistの設定手順は方式Aと同じです（`ProgramArguments` が指すスクリプトの中身だけが異なります）。
 
+## 7. ステータスライン統合
+
+`bswitch check` の結果を Claude Code のステータスライン・tmux・starship などに表示するサンプルスクリプトを `docs/examples/bswitch-statusline.js` に用意しています。
+
+### 出力例
+
+```
+🔀 customer-a(write)   # プロファイルと権限が表示される
+🔀 キー不一致          # BACKLOG_API_KEY が期待値と不一致
+🔀 NOT_SET             # BACKLOG_API_KEY 未設定
+(何も出力しない)        # 付与なし、または bswitch 未インストール
+```
+
+Claude Code の `statusline.js`・tmux・starship などから `node bswitch-statusline.js` を呼び出して使います。スクリプト全文は [`docs/examples/bswitch-statusline.js`](docs/examples/bswitch-statusline.js) を参照してください。
+
 ## 開発
 
 ```bash

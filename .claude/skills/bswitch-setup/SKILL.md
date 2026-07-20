@@ -338,3 +338,17 @@ config: {configパス}
 ```
 
 config に `FIXME` が残っている場合はここで警告する。
+
+---
+
+### Step 10. ステータスライン統合（任意）
+
+以下を案内して、希望すれば設定を手伝う:
+
+```
+bswitch check の結果を Claude Code のステータスラインや starship・tmux に表示できます。
+サンプルスクリプトが docs/examples/bswitch-statusline.js にあります。
+セットアップしますか？
+```
+
+Claude Code の `statusline.js`・tmux・starship などから `node bswitch-statusline.js` を呼び出して使う構成を案内する。スクリプトは `docs/examples/bswitch-statusline.js` にある。ユーザーの環境に応じて配置場所を決めてもらい、各ツールの設定ファイルから呼び出す形を一緒に確認する。
