@@ -52,11 +52,10 @@ echo "${BSWITCH_CONFIG:-$HOME/.config/backlog-switcher/config}"
 
 `bswitch --help` を実行して既にインストール済みか確認する。
 
-未インストールの場合、Claude が把握しているカレントディレクトリを埋め込んだうえで、以下をユーザーに実行してもらう:
+未インストールの場合、以下をユーザーに実行してもらう:
 
 ```bash
-cd {カレントディレクトリの絶対パス}
-uv tool install -e .
+uv tool install git+https://github.com/ice1203/backlog-switcher
 ```
 
 実行完了を確認してから次へ進む。`bswitch --help` が通れば成功。
@@ -77,10 +76,10 @@ echo "${BSWITCH_MASTER_API_KEY:+(set)}"
 
 ```bash
 bswitch() {
+  local api_key
+  api_key=$(op read "op://<Vault>/<Item>/credential") || return $?  # Vault名・項目名は各自の構成に合わせて変更
   local output
-  output=$(op run \
-    --env-file <(echo 'BSWITCH_MASTER_API_KEY=op://<Vault>/<Item>/credential') \  # Vault名・項目名は各自の構成に合わせて変更
-    -- command bswitch "$@")
+  output=$(BSWITCH_MASTER_API_KEY="$api_key" command bswitch "$@")
   local exit_code=$?
   if [[ -n "$output" ]]; then
     eval "$output"
