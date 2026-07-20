@@ -32,7 +32,7 @@ Grantedの `assume` と同じ手触りで「必要なプロジェクトに・必
 
 ### in-scope
 
-- Python製CLI `bswitch`（サブコマンド: `switch` / `release` / `status` / `list` / `enforce` / `shell-init`）
+- Python製CLI `bswitch`（サブコマンド: `switch` / `release` / `status` / `list` / `enforce` / `check` / `shell-init`）
 - TTL（自動解除）: 状態ファイル（`state.json`）に付与中のプロファイル・ユーザーID・期限を記録。APIキーは記録しない
 - 遅延強制: どのサブコマンドも実行冒頭で期限切れの付与があれば自動解除
 - 環境変数エクスポート（Granted風シェル統合）
@@ -55,7 +55,7 @@ Grantedの `assume` と同じ手触りで「必要なプロジェクトに・必
 | 変数名 | 入力/出力 | 用途 |
 |---|---|---|
 | `BSWITCH_MASTER_API_KEY` | 入力（必須） | マスターユーザーのキー。bswitchの全API呼び出しに使う |
-| `BACKLOG_API_KEY` | 出力専用 | switchが仮想ユーザーのキーを書き込む。bswitch自身は読まない |
+| `BACKLOG_API_KEY` | 出力専用 | switchが仮想ユーザーのキーを書き込む。bswitch自身は読まない（例外: `check` は整合確認のため読む） |
 | `BACKLOG_WRITER_API_KEY` | 入力（任意） | 設定済みなら `op read` を呼ばずこちらを使う（テスト・非1Password環境用） |
 | `BACKLOG_READER_API_KEY` | 入力（任意） | 同上 |
 | `BACKLOG_SPACE` | 出力専用 | switch成功後にセット（例: `https://your-space.backlog.jp`） |
@@ -73,6 +73,44 @@ Grantedの `assume` と同じ手触りで「必要なプロジェクトに・必
 - `.zshrc` に `eval "$(command bswitch shell-init zsh)"` を書くと `bswitch` シェル関数が定義される
 - バイナリが出力するexport/unset行をevalする
 - 対話UI・通常メッセージはstderr、eval対象はstdoutへ分離
+
+## bswitch check の仕様
+
+`bswitch status` は Backlog API を複数回呼ぶため頻繁実行に向かない。
+`check` は **Backlog API を一切呼ばず**、`state.json` の付与状態と現在の `BACKLOG_API_KEY` が整合しているかだけを確認する軽量コマンド。
+ステータスラインや外部スクリプトからの定期実行を想定している。
+
+### 動作
+
+1. `load_config()` / `load_state()` で設定と状態を読む
+2. grants が空なら `[]` を stdout に出力して exit 0
+3. 各 grant の permission で `resolve_api_key()` を呼び、`BACKLOG_API_KEY` と比較する
+4. 結果を JSON 配列で stdout に出力して exit 0
+
+`resolve_api_key()` が失敗した場合（1Password 認証切れ等）は stderr にエラーを出力して exit 1（stdout は空）。
+
+### stdout 出力形式
+
+```json
+[{"profile": "my-profile", "permission": "read", "status": "OK"}]
+```
+
+grants がない場合: `[]`
+
+### status の意味
+
+| status | 意味 |
+|---|---|
+| `OK` | `BACKLOG_API_KEY` が期待するキーと一致している |
+| `MISMATCH` | `BACKLOG_API_KEY` は設定されているが期待するキーと異なる（別プロファイルに切り替えた後など） |
+| `NOT_SET` | `BACKLOG_API_KEY` が未設定 |
+
+`MISMATCH` は「grant は記録されているのに環境変数のキーが違う」状態。シェルの再起動や `bswitch release` 後に `BACKLOG_API_KEY` が残存した場合などに起こりうる。
+
+### `BSWITCH_MASTER_API_KEY` は不要
+
+`check` は Backlog API を呼ばないため `BSWITCH_MASTER_API_KEY` なしで動作する。
+`list` / `shell-init` も同様に master_key 不要（バイパス位置が同じ）。
 
 ## --multi の仕様
 
