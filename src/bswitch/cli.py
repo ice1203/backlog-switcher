@@ -8,11 +8,14 @@
 環境変数の入出力分離（docs/design.md「環境変数設計」の厳守事項）:
   - bswitchが読む入力は `BSWITCH_MASTER_API_KEY`（必須）と `BSWITCH_CONFIG`（任意）のみ。
   - `BACKLOG_API_KEY` はswitchが書き込む出力専用であり、bswitch自身は一切読まない。
+    例外: `check` サブコマンドは「現在の BACKLOG_API_KEY が期待キーと整合しているか」を
+    確認する目的に限り参照する。
 """
 
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import sys
 
@@ -21,7 +24,7 @@ import httpx
 from bswitch import shell, switcher, ui
 from bswitch.api import BacklogApiError, BacklogClient
 from bswitch.config import Config, ConfigError, load_config
-from bswitch.keys import KeyResolutionError
+from bswitch.keys import KeyResolutionError, resolve_api_key
 from bswitch.models import Profile, State
 from bswitch.state import load_state, save_state
 from bswitch.switcher import SwitcherError
@@ -78,6 +81,11 @@ def build_parser() -> argparse.ArgumentParser:
     subparsers.add_parser("list", help="configのプロファイル一覧を表示する")
     subparsers.add_parser("enforce", help="期限切れの付与だけを解除する（定期実行用）")
 
+    subparsers.add_parser(
+        "check",
+        help="現在の BACKLOG_API_KEY が state.json の付与状態と整合しているか確認する（Backlog APIを呼ばない）",
+    )
+
     shell_init_parser = subparsers.add_parser("shell-init", help="シェル統合用の関数定義を出力する")
     shell_init_parser.add_argument("shell", choices=list(shell.SUPPORTED_SHELLS), help="対象シェル（zshのみ対応）")
 
@@ -105,6 +113,30 @@ def _handle_list(config: Config) -> None:
     print("  ".join("-" * widths[i] for i in range(3)), file=sys.stderr)
     for row in rows:
         print("  ".join(row[i].ljust(widths[i]) for i in range(3)), file=sys.stderr)
+
+
+def _handle_check(config: Config, state: State) -> None:
+    if not state.grants:
+        print("[]")
+        return
+    # BACKLOG_API_KEY は bswitch の出力専用だが、check は「現在値が期待キーと一致するか」を
+    # 目的とするため例外的に読む。
+    current_key = os.environ.get("BACKLOG_API_KEY")
+    results: list[dict[str, str]] = []
+    for grant in state.grants:
+        try:
+            expected_key = resolve_api_key(grant.permission, config.default)
+        except KeyResolutionError as exc:
+            print(f"エラー: {exc}", file=sys.stderr)
+            sys.exit(1)
+        if current_key is None:
+            status = "NOT_SET"
+        elif current_key == expected_key:
+            status = "OK"
+        else:
+            status = "MISMATCH"
+        results.append({"profile": grant.profile, "permission": grant.permission, "status": status})
+    print(json.dumps(results, ensure_ascii=False))
 
 
 def _resolve_selected_profiles(args: argparse.Namespace, config: Config, all_profiles: list[Profile]) -> list[Profile]:
@@ -199,16 +231,21 @@ def main() -> None:
         _handle_shell_init(args.shell)
         return
 
-    master_key = os.environ.get(ENV_MASTER_API_KEY)
-    if not master_key:
-        print(f"{ENV_MASTER_API_KEY} 環境変数を設定してください", file=sys.stderr)
-        sys.exit(1)
-
     config = load_config()
 
     if args.command == "list":
         _handle_list(config)
         return
+
+    if args.command == "check":
+        state = load_state(config.state_path)
+        _handle_check(config, state)
+        return
+
+    master_key = os.environ.get(ENV_MASTER_API_KEY)
+    if not master_key:
+        print(f"{ENV_MASTER_API_KEY} 環境変数を設定してください", file=sys.stderr)
+        sys.exit(1)
 
     state = load_state(config.state_path)
 
