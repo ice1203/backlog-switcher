@@ -25,7 +25,7 @@ from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 
 from bswitch.api import BacklogClient
-from bswitch.keys import resolve_api_key
+from bswitch.keys import compute_fingerprint, resolve_api_key
 from bswitch.models import DefaultConfig, Grant, Profile, State
 from bswitch.shell import make_export_lines, make_unset_lines
 
@@ -333,6 +333,10 @@ def switch(
     # 7. stdout出力行の生成
     overall = max(effective_permissions, key=lambda p: _PERMISSION_RANK[p])
     api_key = resolve_api_key(overall, config)
+
+    fingerprint = compute_fingerprint(api_key)
+    for g in new_grants:
+        g.key_fingerprint = fingerprint
 
     project_for_output: str | None
     if len(profiles) == 1:

@@ -38,6 +38,7 @@ class Grant:
     user_id: int
     permission: str  # "read" | "write" | "admin"
     expires_at: str | None = None  # ISO8601 or None（無期限）
+    key_fingerprint: str | None = None  # sha256(key[:5]+key[-5:]) の hex。APIキーそのものは含まない
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -46,6 +47,7 @@ class Grant:
             "user_id": self.user_id,
             "permission": self.permission,
             "expires_at": self.expires_at,
+            "key_fingerprint": self.key_fingerprint,
         }
 
     @classmethod
@@ -56,12 +58,13 @@ class Grant:
             user_id=int(data["user_id"]),  # type: ignore[arg-type]
             permission=str(data["permission"]),
             expires_at=(str(data["expires_at"]) if data.get("expires_at") is not None else None),
+            key_fingerprint=(str(data["key_fingerprint"]) if data.get("key_fingerprint") is not None else None),
         )
 
 
 @dataclass
 class State:
-    """state.json全体を表すデータモデル。APIキーは絶対に含めない。"""
+    """state.json全体を表すデータモデル。APIキーの値は含めない（key_fingerprintはハッシュのみ）。"""
 
     grants: list[Grant] = field(default_factory=list)
     user_id_cache: dict[str, int] = field(default_factory=dict)

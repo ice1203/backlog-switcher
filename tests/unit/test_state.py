@@ -74,7 +74,7 @@ def test_state_json_has_no_api_key_field(tmp_path: Path) -> None:
 
     assert set(data.keys()) == {"grants", "user_id_cache"}
     for grant in data["grants"]:
-        assert set(grant.keys()) == {"profile", "project", "user_id", "permission", "expires_at"}
+        assert set(grant.keys()) == {"profile", "project", "user_id", "permission", "expires_at", "key_fingerprint"}
 
     for forbidden in ("api_key", "apiKey", "credential", "op://"):
         assert forbidden not in raw
