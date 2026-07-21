@@ -24,7 +24,7 @@ import httpx
 from bswitch import shell, switcher, ui
 from bswitch.api import BacklogApiError, BacklogClient
 from bswitch.config import Config, ConfigError, load_config
-from bswitch.keys import KeyResolutionError, resolve_api_key
+from bswitch.keys import KeyResolutionError, compute_fingerprint
 from bswitch.models import Profile, State
 from bswitch.state import load_state, save_state
 from bswitch.switcher import SwitcherError
@@ -115,23 +115,20 @@ def _handle_list(config: Config) -> None:
         print("  ".join(row[i].ljust(widths[i]) for i in range(3)), file=sys.stderr)
 
 
-def _handle_check(config: Config, state: State) -> None:
+def _handle_check(state: State) -> None:
     if not state.grants:
         print("[]", file=sys.stderr)
         return
     # BACKLOG_API_KEY は bswitch の出力専用だが、check は「現在値が期待キーと一致するか」を
-    # 目的とするため例外的に読む。
+    # 目的とするため例外的に読む。op readは呼ばず、switch時に保存したfingerprintと比較する。
     current_key = os.environ.get("BACKLOG_API_KEY")
     results: list[dict[str, str]] = []
     for grant in state.grants:
-        try:
-            expected_key = resolve_api_key(grant.permission, config.default)
-        except KeyResolutionError as exc:
-            print(f"エラー: {exc}", file=sys.stderr)
-            sys.exit(1)
         if current_key is None:
             status = "NOT_SET"
-        elif current_key == expected_key:
+        elif grant.key_fingerprint is None:
+            status = "UNKNOWN"
+        elif compute_fingerprint(current_key) == grant.key_fingerprint:
             status = "OK"
         else:
             status = "MISMATCH"
@@ -239,7 +236,7 @@ def main() -> None:
 
     if args.command == "check":
         state = load_state(config.state_path)
-        _handle_check(config, state)
+        _handle_check(state)
         return
 
     master_key = os.environ.get(ENV_MASTER_API_KEY)

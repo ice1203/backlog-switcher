@@ -54,6 +54,7 @@ const formatStatus = (results) => {
   return results.map((r) => {
     if (r.status === 'MISMATCH') return 'キー不一致';
     if (r.status === 'NOT_SET')  return 'NOT_SET';
+    if (r.status === 'UNKNOWN')  return 'UNKNOWN';
     return `${r.profile}(${r.permission})`;
   });
 };

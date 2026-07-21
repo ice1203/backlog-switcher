@@ -13,6 +13,7 @@ from pathlib import Path
 import pytest
 
 from bswitch import cli
+from bswitch.keys import compute_fingerprint
 from bswitch.models import Grant, State
 from bswitch.state import load_state, save_state
 
@@ -321,7 +322,16 @@ def test_check_read_grant_matching_key_returns_ok(
     save_state(
         state_path,
         State(
-            grants=[Grant(profile="test-read", project="MY_PROJECT", user_id=100, permission="read", expires_at=None)]
+            grants=[
+                Grant(
+                    profile="test-read",
+                    project="MY_PROJECT",
+                    user_id=100,
+                    permission="read",
+                    expires_at=None,
+                    key_fingerprint=compute_fingerprint("reader-dummy-key"),
+                )
+            ]
         ),
     )
     monkeypatch.setenv("BACKLOG_API_KEY", "reader-dummy-key")
@@ -340,7 +350,16 @@ def test_check_read_grant_mismatched_key_returns_mismatch(
     save_state(
         state_path,
         State(
-            grants=[Grant(profile="test-read", project="MY_PROJECT", user_id=100, permission="read", expires_at=None)]
+            grants=[
+                Grant(
+                    profile="test-read",
+                    project="MY_PROJECT",
+                    user_id=100,
+                    permission="read",
+                    expires_at=None,
+                    key_fingerprint=compute_fingerprint("reader-dummy-key"),
+                )
+            ]
         ),
     )
     monkeypatch.setenv("BACKLOG_API_KEY", "wrong-key")
@@ -378,7 +397,16 @@ def test_check_write_grant_matching_key_returns_ok(
     save_state(
         state_path,
         State(
-            grants=[Grant(profile="test-write", project="MY_PROJECT", user_id=200, permission="write", expires_at=None)]
+            grants=[
+                Grant(
+                    profile="test-write",
+                    project="MY_PROJECT",
+                    user_id=200,
+                    permission="write",
+                    expires_at=None,
+                    key_fingerprint=compute_fingerprint("writer-dummy-key"),
+                )
+            ]
         ),
     )
     monkeypatch.setenv("BACKLOG_API_KEY", "writer-dummy-key")
@@ -401,12 +429,9 @@ def test_check_works_without_master_api_key(
     assert json.loads(capsys.readouterr().err) == []
 
 
-def test_check_op_read_failure_exits_1(
+def test_check_grant_without_fingerprint_returns_unknown(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], config_path: Path
 ) -> None:
-    from bswitch import keys as bswitch_keys
-    from bswitch.keys import KeyResolutionError
-
     state_path = config_path.parent / "state.json"
     save_state(
         state_path,
@@ -414,18 +439,10 @@ def test_check_op_read_failure_exits_1(
             grants=[Grant(profile="test-read", project="MY_PROJECT", user_id=100, permission="read", expires_at=None)]
         ),
     )
-    monkeypatch.delenv("BACKLOG_READER_API_KEY", raising=False)
-
-    def fail_op_read(*args: object, **kwargs: object) -> str:
-        raise KeyResolutionError("op read失敗")
-
-    monkeypatch.setattr(bswitch_keys, "_read_from_1password", fail_op_read)
+    monkeypatch.setenv("BACKLOG_API_KEY", "reader-dummy-key")
     monkeypatch.setattr(sys, "argv", ["bswitch", "check"])
 
-    with pytest.raises(SystemExit) as excinfo:
-        cli.main()
+    cli.main()
 
-    assert excinfo.value.code == 1
-    captured = capsys.readouterr()
-    assert captured.out == ""
-    assert "エラー" in captured.err
+    result = json.loads(capsys.readouterr().err)
+    assert result == [{"profile": "test-read", "permission": "read", "status": "UNKNOWN"}]
