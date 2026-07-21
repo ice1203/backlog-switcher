@@ -15,6 +15,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import os
 import subprocess
 
@@ -24,6 +25,16 @@ from bswitch.models import DefaultConfig
 ENV_WRITER_API_KEY = "BACKLOG_WRITER_API_KEY"
 #: reader仮想ユーザーAPIキーの環境変数フォールバック名
 ENV_READER_API_KEY = "BACKLOG_READER_API_KEY"
+
+
+def compute_fingerprint(key: str) -> str:
+    """APIキーの先頭・末尾5文字のSHA-256ハッシュを返す（64文字hex）。
+
+    フルキーではなく部分文字列をハッシュ化することで、stateファイルが漏洩しても
+    フルキーへの逆算ができない。ハッシュ化により、部分文字列自体も保護される。
+    """
+    partial = key[:5] + key[-5:]
+    return hashlib.sha256(partial.encode()).hexdigest()
 
 
 class KeyResolutionError(Exception):
