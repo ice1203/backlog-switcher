@@ -31,6 +31,12 @@ APIキーを常時保持させてよい構造です。キー自体の能力が�
 uv tool install git+https://github.com/ice1203/backlog-switcher
 ```
 
+**更新**
+
+```bash
+uv tool install --reinstall git+https://github.com/ice1203/backlog-switcher
+```
+
 以後 `bswitch` コマンドをPATH上のどこからでも直接実行できます。
 
 ```bash
