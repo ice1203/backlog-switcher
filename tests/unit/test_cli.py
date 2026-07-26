@@ -340,7 +340,7 @@ def test_check_read_grant_matching_key_returns_ok(
     cli.main()
 
     result = json.loads(capsys.readouterr().err)
-    assert result == [{"profile": "test-read", "permission": "read", "status": "OK"}]
+    assert result == [{"profile": "test-read", "project": "MY_PROJECT", "permission": "read", "status": "OK"}]
 
 
 def test_check_read_grant_mismatched_key_returns_mismatch(
@@ -368,7 +368,7 @@ def test_check_read_grant_mismatched_key_returns_mismatch(
     cli.main()
 
     result = json.loads(capsys.readouterr().err)
-    assert result == [{"profile": "test-read", "permission": "read", "status": "MISMATCH"}]
+    assert result == [{"profile": "test-read", "project": "MY_PROJECT", "permission": "read", "status": "MISMATCH"}]
 
 
 def test_check_no_backlog_api_key_returns_not_set(
@@ -387,7 +387,7 @@ def test_check_no_backlog_api_key_returns_not_set(
     cli.main()
 
     result = json.loads(capsys.readouterr().err)
-    assert result == [{"profile": "test-read", "permission": "read", "status": "NOT_SET"}]
+    assert result == [{"profile": "test-read", "project": "MY_PROJECT", "permission": "read", "status": "NOT_SET"}]
 
 
 def test_check_write_grant_matching_key_returns_ok(
@@ -415,7 +415,7 @@ def test_check_write_grant_matching_key_returns_ok(
     cli.main()
 
     result = json.loads(capsys.readouterr().err)
-    assert result == [{"profile": "test-write", "permission": "write", "status": "OK"}]
+    assert result == [{"profile": "test-write", "project": "MY_PROJECT", "permission": "write", "status": "OK"}]
 
 
 def test_check_works_without_master_api_key(
@@ -445,4 +445,47 @@ def test_check_grant_without_fingerprint_returns_unknown(
     cli.main()
 
     result = json.loads(capsys.readouterr().err)
-    assert result == [{"profile": "test-read", "permission": "read", "status": "UNKNOWN"}]
+    assert result == [{"profile": "test-read", "project": "MY_PROJECT", "permission": "read", "status": "UNKNOWN"}]
+
+
+def test_check_includes_project_in_fixed_key_order(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], config_path: Path
+) -> None:
+    """付与先プロジェクトを `project` として出力し、キー順が固定であること。
+
+    SessionStart hook（docs/examples/bswitch_session_guard.sh）が付与中プロジェクトを
+    読むため、`project` の存在とキー順は消費側との契約になる。
+    """
+    state_path = config_path.parent / "state.json"
+    save_state(
+        state_path,
+        State(
+            grants=[
+                Grant(
+                    profile="test-read",
+                    project="MY_PROJECT",
+                    user_id=100,
+                    permission="read",
+                    expires_at=None,
+                    key_fingerprint=compute_fingerprint("reader-dummy-key"),
+                ),
+                Grant(
+                    profile="test-write",
+                    project="OTHER_PROJECT",
+                    user_id=200,
+                    permission="write",
+                    expires_at=None,
+                    key_fingerprint=compute_fingerprint("writer-dummy-key"),
+                ),
+            ]
+        ),
+    )
+    monkeypatch.setenv("BACKLOG_API_KEY", "reader-dummy-key")
+    monkeypatch.setattr(sys, "argv", ["bswitch", "check"])
+
+    cli.main()
+
+    result = json.loads(capsys.readouterr().err)
+    assert [r["project"] for r in result] == ["MY_PROJECT", "OTHER_PROJECT"]
+    for entry in result:
+        assert list(entry.keys()) == ["profile", "project", "permission", "status"]

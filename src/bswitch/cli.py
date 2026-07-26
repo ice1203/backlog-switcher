@@ -132,7 +132,14 @@ def _handle_check(state: State) -> None:
             status = "OK"
         else:
             status = "MISMATCH"
-        results.append({"profile": grant.profile, "permission": grant.permission, "status": status})
+        results.append(
+            {
+                "profile": grant.profile,
+                "project": grant.project,
+                "permission": grant.permission,
+                "status": status,
+            }
+        )
     print(json.dumps(results, ensure_ascii=False), file=sys.stderr)
 
 

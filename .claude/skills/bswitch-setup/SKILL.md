@@ -352,3 +352,27 @@ bswitch check の結果を Claude Code のステータスラインや starship�
 ```
 
 Claude Code の `statusline.js`・tmux・starship などから `node bswitch-statusline.js` を呼び出して使う構成を案内する。スクリプトは `docs/examples/bswitch-statusline.js` にある。ユーザーの環境に応じて配置場所を決めてもらい、各ツールの設定ファイルから呼び出す形を一緒に確認する。
+
+---
+
+### Step 11. Claude Code hook 連携（任意）
+
+以下を案内して、希望すれば設定を手伝う:
+
+```
+Claude Code の hook を使うと、AI が意図しないプロジェクトへ書き込む事故を2段構えで防げます。
+
+1. PreToolUse hook（bswitch_key_guard.sh）
+   BACKLOG_API_KEY と付与記録が食い違っていたら、Backlog へアクセスするツール実行を deny します。
+
+2. SessionStart hook（bswitch_session_guard.sh）
+   セッション開始時に「作業ディレクトリ」と「付与中プロジェクト」を Claude に伝え、
+   対応しているかを冒頭1行で報告させます（例: ✅ bswitch — CUSTOMER_A (read) で整合）。
+
+サンプルと導入手順が docs/examples/claude-code-hooks.md にあります。
+セットアップしますか？
+```
+
+スクリプトは `docs/examples/bswitch_key_guard.sh` と `docs/examples/bswitch_session_guard.sh` にある。`~/.claude/hooks/` へ配置し、`~/.claude/settings.json` の `hooks.PreToolUse` / `hooks.SessionStart` へ追記する構成を案内する。手順の詳細・settings.json の断片・deny 条件・注入内容の説明は `docs/examples/claude-code-hooks.md` にまとまっているため、それを参照しながら進める。
+
+`settings.json` を編集する際は、**既存の `hooks.PreToolUse` / `hooks.SessionStart` 配列を上書きせず要素として追記する**こと（他の hook が登録されている場合、配列ごと置き換えると失われる）。編集後に `python3 -m json.tool ~/.claude/settings.json > /dev/null` で JSON の妥当性を確認する。
