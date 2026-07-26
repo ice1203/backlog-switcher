@@ -370,6 +370,32 @@ plistの設定手順は方式Aと同じです（`ProgramArguments` が指すス�
 
 Claude Code の `statusline.js`・tmux・starship などから `node bswitch-statusline.js` を呼び出して使います。スクリプト全文は [`docs/examples/bswitch-statusline.js`](docs/examples/bswitch-statusline.js) を参照してください。
 
+## 8. Claude Code hook 連携
+
+Claude Code の hook と組み合わせると、AI エージェントが意図しないプロジェクトへ書き込む事故を2段構えで防げます。サンプルスクリプトと導入手順を [`docs/examples/claude-code-hooks.md`](docs/examples/claude-code-hooks.md) に用意しています。
+
+| hook | スクリプト | 役割 | 強制力 |
+|---|---|---|---|
+| `PreToolUse` | [`bswitch_key_guard.sh`](docs/examples/bswitch_key_guard.sh) | **キー整合の強制ブロック**。`BACKLOG_API_KEY` と付与記録（state.json）が食い違っていたら、Backlog へアクセスするツール実行を deny する | あり |
+| `SessionStart` | [`bswitch_session_guard.sh`](docs/examples/bswitch_session_guard.sh) | **プロジェクト整合の注意喚起**。作業ディレクトリと付与中プロジェクトをコンテキストへ注入し、対応しているかを AI 自身に判定・報告させる | なし |
+
+`bswitch check` は「キーが壊れていないか」しか判定できません。同じターミナルで別プロファイルへ `switch` してから元のディレクトリに戻った場合、キーと付与記録は一致するため `OK` になり、PreToolUse hook も素通りします。SessionStart hook はこの穴を埋めます。
+
+### SessionStart hook の動作
+
+セッション開始時に、作業ディレクトリと現在の付与状態を Claude のコンテキストへ注入し、両者が対応しているかを応答の冒頭に1行で報告させます。
+
+```
+✅ **bswitch** — `CUSTOMER_A` (read) で整合
+🚨 **bswitch: プロジェクト不一致** — この作業ディレクトリは `顧客A` に見えますが、付与中は `CUSTOMER_B` (write) です
+🚨 **bswitch: キー不整合 (MISMATCH)** — ... `bswitch switch <profile>` を再実行してください
+❓ **bswitch: 判断不能** — `CUSTOMER_A` (read) 付与中。この作業ディレクトリとの対応が判断できません
+```
+
+Backlog を操作するかどうかに関わらずセッション開始時に1回判定させるため、Backlog と無関係な作業でもズレに気づけます。付与0件かつ `BACKLOG_API_KEY` 未設定のときは何も注入しないため、Backlog を使わないプロジェクトでの作業にノイズは出ません。
+
+`SessionStart` hook は仕様上ツール実行をブロックできないため、これは注意喚起です。強制力のあるブロックは PreToolUse hook（キー整合）が担います。
+
 ## 開発
 
 ```bash
