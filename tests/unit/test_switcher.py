@@ -16,6 +16,7 @@ import pytest
 
 from bswitch import switcher
 from bswitch.api import BacklogApiError
+from bswitch.keys import compute_fingerprint
 from bswitch.models import DefaultConfig, Grant, Profile, State
 
 from .conftest import FakeBacklogClient
@@ -937,3 +938,94 @@ def test_switch_writer_only_config_works_for_write_permission(
 
     assert overall == "write"
     assert state.grants[0].user_id == 200
+
+
+# ---------------------------------------------------------------------------
+# restore: 付与記録に合わせた環境変数の再出力（APIを呼ばない）
+# ---------------------------------------------------------------------------
+
+
+def _restore_grant(
+    permission: str,
+    *,
+    project: str = "P1",
+    key: str | None = READER_KEY,
+    expires_at: str | None = None,
+) -> Grant:
+    return Grant(
+        profile=f"{project}-{permission}",
+        project=project,
+        user_id=100 if permission == "read" else 200,
+        permission=permission,
+        expires_at=expires_at,
+        key_fingerprint=compute_fingerprint(key) if key is not None else None,
+    )
+
+
+def test_restore_exports_reader_key_for_read_grant(numeric_config: DefaultConfig) -> None:
+    state = State(grants=[_restore_grant("read")])
+
+    lines = switcher.restore(numeric_config, state)
+
+    assert f"export BACKLOG_API_KEY={READER_KEY}" in lines
+    assert "export BACKLOG_PROJECT=P1" in lines
+
+
+def test_restore_exports_writer_key_for_write_grant(numeric_config: DefaultConfig) -> None:
+    state = State(grants=[_restore_grant("write", key=WRITER_KEY)])
+
+    lines = switcher.restore(numeric_config, state)
+
+    assert f"export BACKLOG_API_KEY={WRITER_KEY}" in lines
+
+
+def test_restore_does_not_modify_state(numeric_config: DefaultConfig) -> None:
+    future = (datetime.now(UTC) + timedelta(hours=1)).isoformat()
+    state = State(grants=[_restore_grant("read", expires_at=future)])
+    before = state.to_dict()
+
+    switcher.restore(numeric_config, state)
+
+    assert state.to_dict() == before
+
+
+def test_restore_ignores_expired_grants(numeric_config: DefaultConfig) -> None:
+    past = (datetime.now(UTC) - timedelta(seconds=1)).isoformat()
+    state = State(grants=[_restore_grant("read", expires_at=past)])
+
+    with pytest.raises(switcher.SwitcherError, match="有効な付与がありません"):
+        switcher.restore(numeric_config, state)
+
+
+def test_restore_without_grants_raises(numeric_config: DefaultConfig) -> None:
+    with pytest.raises(switcher.SwitcherError, match="有効な付与がありません"):
+        switcher.restore(numeric_config, State())
+
+
+def test_restore_fingerprint_mismatch_raises(numeric_config: DefaultConfig) -> None:
+    state = State(grants=[_restore_grant("read", key="rotated-old-key")])
+
+    with pytest.raises(switcher.SwitcherError, match="一致しません"):
+        switcher.restore(numeric_config, state)
+
+
+def test_restore_grant_without_fingerprint_is_allowed(numeric_config: DefaultConfig) -> None:
+    state = State(grants=[_restore_grant("read", key=None)])
+
+    lines = switcher.restore(numeric_config, state)
+
+    assert f"export BACKLOG_API_KEY={READER_KEY}" in lines
+
+
+def test_restore_multiple_projects_unsets_backlog_project(numeric_config: DefaultConfig) -> None:
+    state = State(
+        grants=[
+            _restore_grant("write", project="P1", key=WRITER_KEY),
+            _restore_grant("admin", project="P2", key=WRITER_KEY),
+        ]
+    )
+
+    lines = switcher.restore(numeric_config, state)
+
+    assert f"export BACKLOG_API_KEY={WRITER_KEY}" in lines
+    assert "unset BACKLOG_PROJECT" in lines

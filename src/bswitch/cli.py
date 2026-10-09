@@ -2,7 +2,7 @@
 
 出力の分離（docs/design.md「シェル統合の仕組み」の厳守事項）:
   - 対話UIメッセージ・警告・エラー・list/statusの表示結果はすべてstderrへ。
-  - stdoutには `switch`/`release` 成功時のexport/unset行のみを出力する
+  - stdoutには `switch`/`restore`/`release` 成功時のexport/unset行のみを出力する
     （シェル関数 `bswitch()` がこれを丸ごと `eval` するため、他の文字列が混じると壊れる）。
 
 環境変数の入出力分離（docs/design.md「環境変数設計」の厳守事項）:
@@ -80,6 +80,12 @@ def build_parser() -> argparse.ArgumentParser:
     subparsers.add_parser("status", help="各プロファイルの参加状況・有効期限を表示する")
     subparsers.add_parser("list", help="configのプロファイル一覧を表示する")
     subparsers.add_parser("enforce", help="期限切れの付与だけを解除する（定期実行用）")
+
+    subparsers.add_parser(
+        "restore",
+        aliases=["r"],
+        help="付与中の権限に合わせた環境変数だけを現在のシェルにセットする（Backlog APIを呼ばない）",
+    )
 
     subparsers.add_parser(
         "check",
@@ -161,6 +167,34 @@ def _mask_api_key_line(line: str) -> str:
     return line
 
 
+def _print_export_lines(lines: list[str]) -> None:
+    """export行をstdoutへ出す。ターミナル直結（evalされない）ときはAPIキーを伏せて警告する。"""
+    if sys.stdout.isatty():
+        # シェル関数（`eval "$(command bswitch shell-init zsh)"`）経由ではなく、
+        # ターミナルへ直接出力されている＝evalされない＝APIキーの生値を表示する意味がない。
+        # 生値の端末出力（スクロールバック・ターミナルログへの残留）を避けるため伏せて表示する。
+        print(
+            "警告: シェル統合が設定されていないため、環境変数は現在のシェルにエクスポートされません。"
+            '.zshrcに `eval "$(command bswitch shell-init zsh)"` を追記してください。',
+            file=sys.stderr,
+        )
+        for line in lines:
+            print(_mask_api_key_line(line))
+    else:
+        for line in lines:
+            print(line)
+
+
+def _handle_restore(config: Config) -> None:
+    state = load_state(config.state_path)
+    try:
+        lines = switcher.restore(config.default, state)
+    except _APP_ERRORS as exc:
+        print(f"エラー: {exc}", file=sys.stderr)
+        sys.exit(1)
+    _print_export_lines(lines)
+
+
 def _handle_switch(args: argparse.Namespace, config: Config, client: BacklogClient, state: State) -> None:
     all_profiles = list(config.profiles.values())
     selected = _resolve_selected_profiles(args, config, all_profiles)
@@ -178,21 +212,7 @@ def _handle_switch(args: argparse.Namespace, config: Config, client: BacklogClie
         save=lambda: save_state(config.state_path, state),
     )
     save_state(config.state_path, state)
-
-    if sys.stdout.isatty():
-        # シェル関数（`eval "$(command bswitch shell-init zsh)"`）経由ではなく、
-        # ターミナルへ直接出力されている＝evalされない＝APIキーの生値を表示する意味がない。
-        # 生値の端末出力（スクロールバック・ターミナルログへの残留）を避けるため伏せて表示する。
-        print(
-            "警告: シェル統合が設定されていないため、環境変数は現在のシェルにエクスポートされません。"
-            '.zshrcに `eval "$(command bswitch shell-init zsh)"` を追記してください。',
-            file=sys.stderr,
-        )
-        for line in lines:
-            print(_mask_api_key_line(line))
-    else:
-        for line in lines:
-            print(line)
+    _print_export_lines(lines)
 
 
 def _handle_release(args: argparse.Namespace, config: Config, client: BacklogClient, state: State) -> None:
@@ -244,6 +264,10 @@ def main() -> None:
     if args.command == "check":
         state = load_state(config.state_path)
         _handle_check(state)
+        return
+
+    if args.command in ("restore", "r"):
+        _handle_restore(config)
         return
 
     master_key = os.environ.get(ENV_MASTER_API_KEY)

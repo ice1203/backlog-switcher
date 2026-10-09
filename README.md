@@ -151,6 +151,9 @@ bswitch              # 引数なしで実行すると対話選択モード（bsw
 # 期限付き（2時間後に自動解除対象になる）
 bswitch switch customer-a-read --duration 2h
 
+# 付与中の権限に合わせた環境変数だけをこのシェルにセット（付与・API呼び出しなし）
+bswitch r
+
 # 今の状態を確認
 bswitch status
 
@@ -192,6 +195,21 @@ bswitch switch customer-a --duration 2h
 ```
 
 複数プロファイルを選択した場合、`BACKLOG_PROJECT` はセットされません（`unset`）。単一プロジェクトに決め打ちすると、外部ツールが誤ったプロジェクトをデフォルト扱いする事故につながるためです。
+
+#### `bswitch restore`（短縮形: `bswitch r`）
+
+state.jsonに記録された付与中の権限に合わせて、`BACKLOG_API_KEY` / `BACKLOG_SPACE` / `BACKLOG_DOMAIN` / `BACKLOG_PROJECT` だけを現在のシェルにセットします。
+
+- 環境変数がセットされるのは、このコマンドを明示的に実行したときだけです（shell-init等から自動で呼ばれることはありません）
+- Backlog APIを呼ばず、`BSWITCH_MASTER_API_KEY` も不要です。参加・除名・期限延長は行わないため、このコマンドで新たにプロジェクトへアクセスできるようになることはありません
+- 期限切れの付与は対象外です。有効な付与が0件ならエラーで終了します（`bswitch switch <profile>` を実行してください）
+- 解決したAPIキーが付与時の記録（fingerprint）と一致しない場合はexportせずエラーで終了します
+- 付与中のプロジェクトが複数ある場合、`BACKLOG_PROJECT` はunsetされます
+
+```bash
+bswitch restore
+bswitch r       # 同じ動作
+```
 
 #### `bswitch release [--all]`
 
