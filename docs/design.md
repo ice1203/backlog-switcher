@@ -110,7 +110,20 @@ grants がない場合: `[]`
 ### `BSWITCH_MASTER_API_KEY` は不要
 
 `check` は Backlog API を呼ばないため `BSWITCH_MASTER_API_KEY` なしで動作する。
-`list` / `shell-init` も同様に master_key 不要（バイパス位置が同じ）。
+`list` / `shell-init` / `restore` も同様に master_key 不要（バイパス位置が同じ）。
+
+## bswitch restore の仕様
+
+state.json に記録された付与中の権限に合わせた環境変数だけを、**Backlog API を呼ばずに**現在のシェルへセットするコマンド。短縮形 `r` を持つ。
+明示的に実行したときだけ動作し、shell-init 等から自動で呼び出さない（意図しないプロジェクトのキーが知らないうちにセットされることを防ぐため）。
+
+1. `load_config()` / `load_state()` で設定と状態を読む（`BSWITCH_MASTER_API_KEY` 不要。遅延強制も行わない）
+2. 期限内の grant のみを対象にする。0件ならエラー終了（exit 1・stdout は空）
+3. 対象 grant の最上位 permission で `resolve_api_key()` を呼ぶ
+4. 解決したキーの fingerprint が grant の `key_fingerprint` と一致しなければエラー終了する（未記録の grant は照合対象外）
+5. `make_export_lines()` で export 行を stdout に出力する。対象プロジェクトが複数なら `BACKLOG_PROJECT` は unset
+
+state.json は変更しない（期限延長・記録の削除はしない）。
 
 ## --multi の仕様
 

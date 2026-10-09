@@ -489,3 +489,55 @@ def test_check_includes_project_in_fixed_key_order(
     assert [r["project"] for r in result] == ["MY_PROJECT", "OTHER_PROJECT"]
     for entry in result:
         assert list(entry.keys()) == ["profile", "project", "permission", "status"]
+
+
+# --- bswitch restore のテスト ---
+
+
+@pytest.mark.parametrize("command", ["restore", "r"])
+def test_restore_exports_without_master_key_or_api_calls(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], config_path: Path, command: str
+) -> None:
+    state_path = config_path.parent / "state.json"
+    save_state(
+        state_path,
+        State(
+            grants=[
+                Grant(
+                    profile="test-write",
+                    project="MY_PROJECT",
+                    user_id=200,
+                    permission="write",
+                    expires_at=None,
+                    key_fingerprint=compute_fingerprint("writer-dummy-key"),
+                )
+            ]
+        ),
+    )
+    monkeypatch.delenv(MASTER_KEY_ENV, raising=False)
+
+    def _no_client(*_a: object, **_kw: object) -> None:
+        raise AssertionError("restore はBacklogClientを生成してはならない")
+
+    monkeypatch.setattr(cli, "BacklogClient", _no_client)
+    monkeypatch.setattr(sys, "argv", ["bswitch", command])
+
+    cli.main()
+
+    captured = capsys.readouterr()
+    assert "export BACKLOG_API_KEY=writer-dummy-key" in captured.out
+    assert "export BACKLOG_PROJECT=MY_PROJECT" in captured.out
+
+
+def test_restore_without_grants_exits_with_error(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setattr(sys, "argv", ["bswitch", "restore"])
+
+    with pytest.raises(SystemExit) as excinfo:
+        cli.main()
+
+    assert excinfo.value.code == 1
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert "bswitch switch" in captured.err

@@ -349,6 +349,44 @@ def switch(
     return lines, overall
 
 
+def restore(config: DefaultConfig, state: State) -> list[str]:
+    """state.jsonに記録された有効な付与に合わせたexport行だけを生成する（`bswitch restore`）。
+
+    ユーザーが明示的に実行したときだけ呼ばれる（shell-init等から自動では呼ばない）。
+    Backlog APIは一切呼ばず、参加・除名・期限延長も行わない（stateも変更しない）。
+    期限切れの付与は対象外とする（解除はAPIが必要なため、switch/enforce側に任せる）。
+
+    Raises:
+        SwitcherError: 有効な付与が0件の場合、解決したキーが付与記録のfingerprintと一致しない場合。
+        KeyResolutionError: APIキーの解決に失敗した場合。
+    """
+    now = datetime.now(UTC)
+    active = [g for g in state.grants if not _is_expired(g, now)]
+    if not active:
+        raise SwitcherError("有効な付与がありません。`bswitch switch <profile>` を実行してください")
+
+    overall = max((g.permission for g in active), key=lambda p: _PERMISSION_RANK[p])
+    api_key = resolve_api_key(overall, config)
+
+    # 付与時と異なるキー（1Password側の差し替え等）を黙ってexportしない。
+    # fingerprint未記録の古い付与は照合できないため対象外とする。
+    fingerprint = compute_fingerprint(api_key)
+    if any(g.key_fingerprint is not None and g.key_fingerprint != fingerprint for g in active):
+        raise SwitcherError(
+            "解決したAPIキーが付与記録と一致しません。`bswitch switch <profile>` を実行し直してください"
+        )
+
+    projects = list(dict.fromkeys(g.project for g in active))
+    project_for_output: str | None
+    if len(projects) == 1:
+        project_for_output = projects[0]
+    else:
+        project_for_output = None
+        print("複数プロジェクトのため BACKLOG_PROJECT は未設定です", file=sys.stderr)
+
+    return make_export_lines(api_key, config.space, project_for_output)
+
+
 def release(
     config: DefaultConfig,
     all_profiles: list[Profile],
