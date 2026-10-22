@@ -60,6 +60,7 @@ uv tool install -e .
 ```ini
 [default]
 space = your-space.backlog.jp      ; スペースのホスト名
+master_api_key_ref = op://MyVault/backlog-master-api-key/credential  ; マスターユーザー（人間）のAPIキーの1Password参照
 writer_user = svc-writer@example.com   ; 制限なし仮想ユーザー（メールアドレスまたは数値ID）
 reader_user = svc-reader@example.com   ; 「課題の閲覧のみ」仮想ユーザー（同上）
 writer_api_key_ref = op://MyVault/backlog-svc-writer/credential  ; 1Password参照
@@ -79,11 +80,11 @@ configが存在しない場合、`bswitch` はサンプルconfigをstderrに表�
 
 ### 2.3 マスターAPIキーの設定
 
-`BSWITCH_MASTER_API_KEY` にマスターユーザー（人間）自身のBacklog APIキーを設定します。bswitchが読む唯一の入力用キーです。
+マスターユーザー（人間）自身のBacklog APIキーを1Passwordに保管し、2.2のconfigに `master_api_key_ref`（`op://...` 参照）として設定します。bswitchは `switch` / `release` / `status` / `enforce` の実行時にだけ `op read` で取得し、シェルの環境変数には書き出しません。
 
-```bash
-export BSWITCH_MASTER_API_KEY="..."
-```
+> **警告**: マスターAPIキーは仮想ユーザーの参加・除名を含むマスターユーザーの全権限を持ちます。`export BSWITCH_MASTER_API_KEY=...` を `.zshrc` 等に書くなど、**AIエージェント（Claude Code等）を起動するシェルの環境変数にマスターキーを常駐させないでください**。エージェントはシェルの環境変数を継承するため、マスターキーを読み取れてしまい、参加状況による権限の制限が無効になります。
+
+`master_api_key_ref` を使わない場合は、`BSWITCH_MASTER_API_KEY` を `command bswitch` の1回の実行にだけ渡してください（例: `.claude/skills/bswitch-setup/SKILL.md` の wrapper 関数のように `BSWITCH_MASTER_API_KEY="$api_key" command bswitch "$@"` とする）。`BSWITCH_MASTER_API_KEY` が設定されている場合は `master_api_key_ref` より優先されます。
 
 ### 2.4 シェル統合の追記
 
@@ -100,16 +101,14 @@ eval "$(command bswitch shell-init zsh)"
 ### 3.1 前提
 
 ```bash
-# 1. マスターキー（必須。bswitchの全操作に使う）
-export BSWITCH_MASTER_API_KEY="<マスターユーザーのAPIキー>"
+# 1. マスターキー・仮想ユーザーキーはconfigの *_api_key_ref（op://...）で設定する（2.2 / 2.3 / 4.）
+#    BSWITCH_MASTER_API_KEY / BACKLOG_WRITER_API_KEY / BACKLOG_READER_API_KEY を export しないこと
 
-# 2. 仮想ユーザーキー（op://を使わない場合）
-export BACKLOG_WRITER_API_KEY="<writerのAPIキー>"
-export BACKLOG_READER_API_KEY="<readerのAPIキー>"
-
-# 3. シェル統合（.zshrcに追記すると、switch後に環境変数が自動セットされる）
+# 2. シェル統合（.zshrcに追記すると、switch後に環境変数が自動セットされる）
 eval "$(command bswitch shell-init zsh)"
 ```
+
+> **警告**: `BSWITCH_MASTER_API_KEY` はAIエージェントを起動するシェルに絶対に常駐させないでください（2.3）。`BACKLOG_WRITER_API_KEY` / `BACKLOG_READER_API_KEY` の環境変数フォールバックはテスト専用です（4.）。
 
 ### 3.2 基本フロー
 
@@ -284,7 +283,7 @@ bswitch enforce
 
 ### テスト・非1Password環境用フォールバック
 
-環境変数 `BACKLOG_WRITER_API_KEY` / `BACKLOG_READER_API_KEY` が設定されていれば、`op read` を呼ばずそちらを優先して使います（E2Eテスト等で使用）。
+環境変数 `BACKLOG_WRITER_API_KEY` / `BACKLOG_READER_API_KEY` が設定されていれば、`op read` を呼ばずそちらを優先して使います。**テスト専用**です。AIエージェントを起動するシェルでexportすると、`bswitch switch` で付与した権限に関係なくエージェントがwriter/readerのキーを読み取れてしまうため、通常利用では設定しないでください。
 
 ## 5. シェル統合のセットアップ手順
 

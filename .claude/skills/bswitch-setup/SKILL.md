@@ -2,7 +2,7 @@
 name: bswitch-setup
 description: |
   backlog-switcher (bswitch) の初回セットアップ・config更新を対話的に行う。
-  インストール、BSWITCH_MASTER_API_KEY 確認、Backlog API でユーザー/プロジェクト一覧取得、
+  インストール、マスターAPIキーの1Password参照設定、Backlog API でユーザー/プロジェクト一覧取得、
   config 生成・更新、シェル統合まで一気通貫でガイドする。
   「bswitchをセットアップしたい」「bswitchのconfigを更新したい」「プロファイルを追加したい」と言われたら必ず使用する。
 argument-hint: "[setup|update]"
@@ -62,17 +62,31 @@ uv tool install git+https://github.com/ice1203/backlog-switcher
 
 ---
 
-### Step 2. BSWITCH_MASTER_API_KEY 確認
+### Step 2. マスターAPIキーの設定
 
-```bash
-echo "${BSWITCH_MASTER_API_KEY:+(set)}"
+**マスターAPIキーを AI エージェント（Claude 自身を含む）の環境変数に置いてはならない。** `export BSWITCH_MASTER_API_KEY=...` を `~/.zshrc` 等へ追記する案内はしない（エージェントが継承してマスターユーザーの全権限を持ってしまうため）。
+
+マスターユーザー（人間）の Backlog API キーを 1Password に保管してもらい、参照パスを組み立てる。以降 `MASTER_REF` として保持し、Step 8 で config の `master_api_key_ref` に書き込む（bswitch が実行時に `op read` で取得する）:
+
+- **項目名**: 任意（例: `My Backlog API Key`）
+- **フィールド名**: `credential`
+- **値**: Backlog の個人設定画面で発行した API キー
+
+```
+MASTER_REF = op://{Vault}/{Item}/{Field}
 ```
 
-未設定の場合、1Password を使うかどうかをユーザーに確認し、`~/.zshrc` への追記内容を案内する。
+**Claude 自身は `op read "${MASTER_REF}"` を実行しない**（実行するとマスターキーが Claude のプロセスに渡る）。Step 5 / Step 7 のマスターキーを使う API 呼び出しは、コマンドを提示し、Claude Code の外の別ターミナルでユーザー自身に実行して結果を貼り付けてもらう（Claude のセッション内で `op` を認可させないため、`!` プレフィックスも使わない）。提示するコマンドでは `${SPACE}` / `${MASTER_REF}` / `${INPUT_EMAIL}` を実際の値に置き換えておく（`$(op read ...)` の部分はユーザーのシェルで展開させる）。
 
-#### 1Password を使う場合（推奨）
+`~/.zshrc` には以下を追記する:
 
-以下の wrapper 関数を `~/.zshrc` に追記する。これがシェル統合も兼ねるため `eval "$(command bswitch shell-init zsh)"` は**不要**。
+```bash
+eval "$(command bswitch shell-init zsh)"
+```
+
+#### 別案: wrapper 関数
+
+config の `master_api_key_ref` を使わず、以下の wrapper 関数で `command bswitch` の1回の実行にだけキーを渡してもよい。これがシェル統合も兼ねるため `eval "$(command bswitch shell-init zsh)"` は**不要**。
 
 ```bash
 bswitch() {
@@ -88,18 +102,9 @@ bswitch() {
 }
 ```
 
-1Password の項目は以下で作成する:
-- **項目名**: 任意（例: `My Backlog API Key`）— Vault 名・項目名は上記の参照パスに合わせて変更
-- **フィールド名**: `credential`
-- **値**: Backlog の個人設定画面で発行した API キー
-
 #### 1Password を使わない場合
 
-以下を `~/.zshrc` に追記する。`BSWITCH_MASTER_API_KEY` は direnv 等プロセス単位で注入できる方法で別途設定すること（`export` による常駐は非推奨）。
-
-```bash
-eval "$(command bswitch shell-init zsh)"
-```
+`BSWITCH_MASTER_API_KEY` は上記 wrapper のように `command bswitch` の1回の実行にだけ渡す方法で別途設定してもらう（`export`・direnv 等によるシェルへの常駐は不可）。この場合 Step 5 / Step 7 の API 呼び出しはコマンドを提示してユーザー自身に実行してもらう。
 
 ---
 
@@ -117,13 +122,13 @@ Step 2 で `~/.zshrc` に追記した内容を反映するため、ユーザー�
 再起動後に続きから再開できます。
 ```
 
-再起動後、`BSWITCH_MASTER_API_KEY` が有効かを確認してから次へ進む:
+再起動後、マスターAPIキーが Claude の環境に**存在しない**ことを確認してから次へ進む:
 
 ```bash
 echo "${BSWITCH_MASTER_API_KEY:+(set)}"
 ```
 
-`(set)` と表示されれば OK。
+何も表示されなければ OK。`(set)` と表示された場合は、`~/.zshrc` 等の `export BSWITCH_MASTER_API_KEY` を削除してもらう。
 
 ---
 
@@ -150,10 +155,10 @@ writer ユーザーのメールアドレスを入力してください:
 reader ユーザーのメールアドレスを入力してください（不要の場合はスキップ）:
 ```
 
-入力されたメールアドレスが実際に存在するか API で確認する:
+入力されたメールアドレスが実際に存在するか API で確認する。マスターキーを使うため、以下のコマンドを提示し、Claude Code の外の別ターミナルでユーザー自身に実行して結果を貼り付けてもらう（Claude は実行しない）:
 
 ```bash
-curl -s "https://${SPACE}/api/v2/users?apiKey=${BSWITCH_MASTER_API_KEY}" \
+curl -s "https://${SPACE}/api/v2/users?apiKey=$(op read "${MASTER_REF}")" \
   | python3 -c "
 import json, sys
 email = '${INPUT_EMAIL}'
@@ -176,7 +181,7 @@ reader をスキップした場合、config の `reader_user` / `reader_api_key_
 ```
 仮想ユーザーの API キーをどのように管理しますか？
 
-1. 環境変数（BACKLOG_WRITER_API_KEY / BACKLOG_READER_API_KEY）
+1. 環境変数（BACKLOG_WRITER_API_KEY / BACKLOG_READER_API_KEY。テスト専用。AI エージェントを起動するシェルで export しない）
 2. 1Password 参照（op://Vault/Item/credential 形式）
 3. 後で手動設定する（config にプレースホルダーを入れる）
 ```
@@ -222,8 +227,10 @@ writer_api_key_ref = op://{Vault}/{Item}/{Field}
 
 ### Step 7. Backlog プロジェクト一覧取得
 
+マスターキーを使うため、以下のコマンドを提示し、Claude Code の外の別ターミナルでユーザー自身に実行して結果を貼り付けてもらう（Claude は実行しない）:
+
 ```bash
-curl -s "https://${SPACE}/api/v2/projects?apiKey=${BSWITCH_MASTER_API_KEY}" \
+curl -s "https://${SPACE}/api/v2/projects?apiKey=$(op read "${MASTER_REF}")" \
   | python3 -c "
 import json, sys
 projects = json.load(sys.stdin)
@@ -305,6 +312,7 @@ EOF
 ```ini
 [default]
 space = {SPACE}
+master_api_key_ref = {Step 2 の MASTER_REF}  ; 1Password を使わない場合は省略
 writer_user = {writer のメールアドレスまたは数値ID}
 reader_user = {reader のメールアドレスまたは数値ID}  ; reader スキップ時は省略
 writer_api_key_ref = {Step 5 で決定した値}

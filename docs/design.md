@@ -54,9 +54,9 @@ Grantedの `assume` と同じ手触りで「必要なプロジェクトに・必
 
 | 変数名 | 入力/出力 | 用途 |
 |---|---|---|
-| `BSWITCH_MASTER_API_KEY` | 入力（必須） | マスターユーザーのキー。bswitchの全API呼び出しに使う |
+| `BSWITCH_MASTER_API_KEY` | 入力（任意） | マスターユーザーのキー。bswitchの全API呼び出しに使う。未設定ならconfigの `master_api_key_ref` を `op read` で都度取得する（推奨。AIエージェントを起動するシェルに常駐させない） |
 | `BACKLOG_API_KEY` | 出力専用 | switchが仮想ユーザーのキーを書き込む。bswitch自身は読まない（例外: `check` は整合確認のため読む） |
-| `BACKLOG_WRITER_API_KEY` | 入力（任意） | 設定済みなら `op read` を呼ばずこちらを使う（テスト・非1Password環境用） |
+| `BACKLOG_WRITER_API_KEY` | 入力（任意） | 設定済みなら `op read` を呼ばずこちらを使う（テスト専用。AIエージェントを起動するシェルに常駐させない） |
 | `BACKLOG_READER_API_KEY` | 入力（任意） | 同上 |
 | `BACKLOG_SPACE` | 出力専用 | switch成功後にセット（例: `https://your-space.backlog.jp`） |
 | `BACKLOG_DOMAIN` | 出力専用 | switch成功後にセット（例: `your-space.backlog.jp`） |
@@ -64,7 +64,7 @@ Grantedの `assume` と同じ手触りで「必要なプロジェクトに・必
 | `BSWITCH_CONFIG` | 入力（任意） | configファイルパスの上書き |
 | `BSWITCH_E2E` | 入力（任意） | `1` のときのみE2Eテストを実行 |
 
-`BSWITCH_MASTER_API_KEY` 未設定なら分かりやすいエラーで即終了。
+`BSWITCH_MASTER_API_KEY` も `master_api_key_ref` も未設定なら分かりやすいエラーで即終了。
 
 ## シェル統合の仕組み
 

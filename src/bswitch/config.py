@@ -20,6 +20,7 @@ DEFAULT_CONFIG_PATH = Path.home() / ".config" / "backlog-switcher" / "config"
 SAMPLE_CONFIG = """\
 [default]
 space = your-space.backlog.jp      ; スペースのホスト名
+master_api_key_ref = op://MyVault/backlog-master-api-key/credential  ; マスターユーザー（人間）のAPIキーの1Password参照
 writer_user = svc-writer@example.com   ; write/admin用仮想ユーザー（メールアドレスまたは数値ID）
 writer_api_key_ref = op://MyVault/backlog-svc-writer/credential  ; 1Password参照
 reader_user = svc-reader@example.com   ; read用仮想ユーザー（省略可。省略時はread権限が使用不可）
@@ -119,6 +120,7 @@ def _parse_default(parser: configparser.ConfigParser) -> DefaultConfig:
         writer_api_key_ref=writer_api_key_ref,
         reader_api_key_ref=reader_api_key_ref,
         default_duration=default_duration or None,
+        master_api_key_ref=_optional("master_api_key_ref"),
     )
 
 

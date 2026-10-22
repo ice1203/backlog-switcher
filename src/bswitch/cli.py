@@ -6,7 +6,8 @@
     （シェル関数 `bswitch()` がこれを丸ごと `eval` するため、他の文字列が混じると壊れる）。
 
 環境変数の入出力分離（docs/design.md「環境変数設計」の厳守事項）:
-  - bswitchが読む入力は `BSWITCH_MASTER_API_KEY`（必須）と `BSWITCH_CONFIG`（任意）のみ。
+  - bswitchが読む入力は `BSWITCH_MASTER_API_KEY`（任意。未設定ならconfigの `master_api_key_ref` を
+    `op read` で都度取得）と `BSWITCH_CONFIG`（任意）のみ。
   - `BACKLOG_API_KEY` はswitchが書き込む出力専用であり、bswitch自身は一切読まない。
     例外: `check` サブコマンドは「現在の BACKLOG_API_KEY が期待キーと整合しているか」を
     確認する目的に限り参照する。
@@ -24,13 +25,10 @@ import httpx
 from bswitch import shell, switcher, ui
 from bswitch.api import BacklogApiError, BacklogClient
 from bswitch.config import Config, ConfigError, load_config
-from bswitch.keys import KeyResolutionError, compute_fingerprint
+from bswitch.keys import ENV_MASTER_API_KEY, KeyResolutionError, compute_fingerprint, resolve_master_key
 from bswitch.models import Profile, State
 from bswitch.state import load_state, save_state
 from bswitch.switcher import SwitcherError
-
-#: bswitchが読む唯一の入力用マスターAPIキー環境変数（docs/design.md「環境変数設計」）。
-ENV_MASTER_API_KEY = "BSWITCH_MASTER_API_KEY"
 
 #: cli層で一律に捕捉し「エラー: <message>」として終了するアプリケーションレベルの例外群。
 #: いずれもAPIキーの値を含まないことをそれぞれのモジュールで確認済み。
@@ -270,14 +268,17 @@ def main() -> None:
         _handle_restore(config)
         return
 
-    master_key = os.environ.get(ENV_MASTER_API_KEY)
-    if not master_key:
-        print(f"{ENV_MASTER_API_KEY} 環境変数を設定してください", file=sys.stderr)
-        sys.exit(1)
+    if os.environ.get(ENV_MASTER_API_KEY) and config.default.master_api_key_ref is not None:
+        print(
+            f"警告: {ENV_MASTER_API_KEY} が設定されているため master_api_key_ref より優先して使います。"
+            "シェルにexportしている場合は削除してください（AIエージェントがマスターキーを継承します）",
+            file=sys.stderr,
+        )
 
     state = load_state(config.state_path)
 
     try:
+        master_key = resolve_master_key(config.default)
         with BacklogClient(config.default.space, master_key) as client:
             all_profiles = list(config.profiles.values())
 

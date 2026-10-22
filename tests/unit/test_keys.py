@@ -140,3 +140,46 @@ def test_resolve_reader_key_raises_when_ref_is_none(monkeypatch: pytest.MonkeyPa
 
     with pytest.raises(keys.KeyResolutionError, match="reader用APIキーが設定されていません"):
         keys.resolve_reader_key(config)
+
+
+def test_master_env_takes_priority_over_ref(monkeypatch: pytest.MonkeyPatch, mocker: MockerFixture) -> None:
+    monkeypatch.setenv(keys.ENV_MASTER_API_KEY, "master-dummy-key")
+    run_mock = mocker.patch("bswitch.keys.subprocess.run")
+    config = DefaultConfig(space="test-space.backlog.com", master_api_key_ref="op://MyVault/backlog-master/credential")
+
+    assert keys.resolve_master_key(config) == "master-dummy-key"
+    run_mock.assert_not_called()
+
+
+def test_master_key_read_from_ref_when_env_unset(monkeypatch: pytest.MonkeyPatch, mocker: MockerFixture) -> None:
+    monkeypatch.delenv(keys.ENV_MASTER_API_KEY, raising=False)
+    run_mock = mocker.patch(
+        "bswitch.keys.subprocess.run",
+        return_value=subprocess.CompletedProcess(args=[], returncode=0, stdout="op-master-key\n", stderr=""),
+    )
+    config = DefaultConfig(space="test-space.backlog.com", master_api_key_ref="op://MyVault/backlog-master/credential")
+
+    assert keys.resolve_master_key(config) == "op-master-key"
+    assert run_mock.call_args.args[0] == ["op", "read", "op://MyVault/backlog-master/credential"]
+
+
+def test_master_op_not_found_hint_does_not_suggest_export(
+    monkeypatch: pytest.MonkeyPatch, mocker: MockerFixture
+) -> None:
+    monkeypatch.delenv(keys.ENV_MASTER_API_KEY, raising=False)
+    mocker.patch("bswitch.keys.subprocess.run", side_effect=FileNotFoundError())
+    config = DefaultConfig(space="test-space.backlog.com", master_api_key_ref="op://MyVault/backlog-master/credential")
+
+    with pytest.raises(keys.KeyResolutionError) as excinfo:
+        keys.resolve_master_key(config)
+
+    message = str(excinfo.value)
+    assert "command bswitch" in message
+    assert "常駐は不可" in message
+
+
+def test_master_key_missing_raises(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv(keys.ENV_MASTER_API_KEY, raising=False)
+
+    with pytest.raises(keys.KeyResolutionError, match="master_api_key_ref"):
+        keys.resolve_master_key(DefaultConfig(space="test-space.backlog.com"))

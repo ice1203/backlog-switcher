@@ -6,6 +6,7 @@ BacklogClientは `cli.BacklogClient` をFakeBacklogClientへ差し替えて実HT
 from __future__ import annotations
 
 import json
+import subprocess
 import sys
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -65,6 +66,61 @@ def test_missing_master_key_exits_with_error(
     assert excinfo.value.code == 1
     captured = capsys.readouterr()
     assert MASTER_KEY_ENV in captured.err
+
+
+def test_switch_resolves_master_key_from_config_ref_without_env(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], config_path: Path
+) -> None:
+    """マスターキーをシェルに常駐させず、configの master_api_key_ref から実行時に取得して動作する。"""
+    monkeypatch.delenv(MASTER_KEY_ENV, raising=False)
+    config_path.write_text(
+        CONFIG_INI.replace("[default]\n", "[default]\nmaster_api_key_ref = op://MyVault/backlog-master/credential\n"),
+        encoding="utf-8",
+    )
+    op_calls: list[list[str]] = []
+
+    def _fake_run(args: list[str], **_kw: object) -> subprocess.CompletedProcess[str]:
+        op_calls.append(args)
+        return subprocess.CompletedProcess(args=args, returncode=0, stdout="op-master-key\n", stderr="")
+
+    monkeypatch.setattr("bswitch.keys.subprocess.run", _fake_run)
+    client_keys: list[str] = []
+    fake = FakeBacklogClient()
+
+    def _client(_space: str, api_key: str) -> FakeBacklogClient:
+        client_keys.append(api_key)
+        return fake
+
+    monkeypatch.setattr(cli, "BacklogClient", _client)
+    monkeypatch.setattr(sys, "argv", ["bswitch", "switch", "test-read"])
+
+    cli.main()
+
+    captured = capsys.readouterr()
+    assert op_calls == [["op", "read", "op://MyVault/backlog-master/credential"]]
+    assert client_keys == ["op-master-key"]
+    assert "export BACKLOG_API_KEY=reader-dummy-key" in captured.out
+    assert "op-master-key" not in captured.out + captured.err
+
+
+def test_warns_when_master_env_overrides_config_ref(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], config_path: Path
+) -> None:
+    """refを設定済みでも環境変数が残っていると黙って優先されるため、常駐に気付けるよう警告する。"""
+    monkeypatch.setenv(MASTER_KEY_ENV, "dummy-master-key")
+    config_path.write_text(
+        CONFIG_INI.replace("[default]\n", "[default]\nmaster_api_key_ref = op://MyVault/backlog-master/credential\n"),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(cli, "BacklogClient", lambda _space, _key: FakeBacklogClient())
+    monkeypatch.setattr(sys, "argv", ["bswitch", "enforce"])
+
+    cli.main()
+
+    captured = capsys.readouterr()
+    assert "警告" in captured.err
+    assert MASTER_KEY_ENV in captured.err
+    assert "dummy-master-key" not in captured.out + captured.err
 
 
 def test_bswitch_does_not_read_backlog_api_key(

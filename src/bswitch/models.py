@@ -27,6 +27,7 @@ class DefaultConfig:
     writer_api_key_ref: str | None = None
     reader_api_key_ref: str | None = None
     default_duration: str | None = None
+    master_api_key_ref: str | None = None
 
 
 @dataclass

@@ -10,7 +10,8 @@
 
 注意:
   - bswitchは `BACKLOG_API_KEY`（出力専用）を一切読まない
-  - マスターユーザーのキーは `BSWITCH_MASTER_API_KEY` からのみ読む（このモジュールの対象外）
+  - マスターユーザーのキーも同じ順序で `BSWITCH_MASTER_API_KEY` > config の `master_api_key_ref` から解決する
+    （AIエージェントを起動するシェルにマスターキーを常駐させないため、`master_api_key_ref` を推奨）
 """
 
 from __future__ import annotations
@@ -25,6 +26,20 @@ from bswitch.models import DefaultConfig
 ENV_WRITER_API_KEY = "BACKLOG_WRITER_API_KEY"
 #: reader仮想ユーザーAPIキーの環境変数フォールバック名
 ENV_READER_API_KEY = "BACKLOG_READER_API_KEY"
+#: マスターユーザーAPIキーの環境変数名（docs/design.md「環境変数設計」）
+ENV_MASTER_API_KEY = "BSWITCH_MASTER_API_KEY"
+
+#: op不在時の案内文（role別）。マスターキーはシェルへの常駐を禁止しているため、
+#: 環境変数をexportする案内はせず、1回の実行にだけ渡す方法を示す。
+_OP_NOT_FOUND_HINT = {
+    "writer": f"1Password CLIをインストールするか、環境変数でキーを直接指定してください（{ENV_WRITER_API_KEY}）。",
+    "reader": f"1Password CLIをインストールするか、環境変数でキーを直接指定してください（{ENV_READER_API_KEY}）。",
+    "master": (
+        "1Password CLIをインストールしてください。使えない場合は、シェル関数（wrapper）の中で "
+        f'`{ENV_MASTER_API_KEY}="$key" command bswitch "$@"` の出力をevalする形で1回の実行にだけキーを渡してください'
+        "（READMEの「マスターAPIキーの設定」参照。exportによるシェルへの常駐は不可）。"
+    ),
+}
 
 
 def compute_fingerprint(key: str) -> str:
@@ -55,11 +70,8 @@ def _read_from_1password(ref: str, *, role: str) -> str:
             check=False,
         )
     except FileNotFoundError as exc:
-        fallback_env = ENV_WRITER_API_KEY if role == "writer" else ENV_READER_API_KEY
         raise KeyResolutionError(
-            f"{role}用APIキーの取得に失敗しました: 1Password CLI（op）が見つかりません。"
-            "1Password CLIをインストールするか、環境変数でキーを直接指定してください"
-            f"（{fallback_env}）。"
+            f"{role}用APIキーの取得に失敗しました: 1Password CLI（op）が見つかりません。{_OP_NOT_FOUND_HINT[role]}"
         ) from exc
     if result.returncode != 0:
         raise KeyResolutionError(
@@ -96,6 +108,20 @@ def resolve_reader_key(config: DefaultConfig) -> str:
             f"configの reader_api_key_ref または環境変数 {ENV_READER_API_KEY} を設定してください。"
         )
     return _read_from_1password(config.reader_api_key_ref, role="reader")
+
+
+def resolve_master_key(config: DefaultConfig) -> str:
+    """マスターユーザーのAPIキーを解決する（コマンド実行時のみ取得し、シェルへは書き出さない）。"""
+    env_value = os.environ.get(ENV_MASTER_API_KEY)
+    if env_value:
+        return env_value
+    if config.master_api_key_ref is None:
+        raise KeyResolutionError(
+            "マスターAPIキーが設定されていません。"
+            "configの master_api_key_ref を設定してください"
+            f"（{ENV_MASTER_API_KEY} を使う場合は1回の実行にだけ渡し、exportによるシェルへの常駐は不可）。"
+        )
+    return _read_from_1password(config.master_api_key_ref, role="master")
 
 
 def resolve_api_key(permission: str, config: DefaultConfig) -> str:
