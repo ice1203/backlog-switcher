@@ -10,8 +10,9 @@ import os
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
+from urllib.parse import urlsplit
 
-from bswitch.models import PERMISSIONS, DefaultConfig, Profile
+from bswitch.models import DEFAULT_MCP_URL, PERMISSIONS, DefaultConfig, Profile
 
 #: 既定のconfigファイルパス。
 DEFAULT_CONFIG_PATH = Path.home() / ".config" / "backlog-switcher" / "config"
@@ -21,10 +22,11 @@ SAMPLE_CONFIG = """\
 [default]
 space = your-space.backlog.jp      ; スペースのホスト名
 writer_user = svc-writer@example.com   ; write/admin用仮想ユーザー（メールアドレスまたは数値ID）
-writer_api_key_ref = op://MyVault/backlog-svc-writer/credential  ; 1Password参照
-reader_user = svc-reader@example.com   ; read用仮想ユーザー（省略可。省略時はread権限が使用不可）
-reader_api_key_ref = op://MyVault/backlog-svc-reader/credential  ; 省略可
-default_duration = 8h       ; 任意。--duration未指定時の有効期限（未設定なら無期限）
+reader_user = svc-reader@example.com   ; read用仮想ユーザー（writer_userとどちらか一方は必須）
+writer_browser_profile = Profile 1     ; writerで認可画面を開くChromeのプロファイル（MCPサーバーの認可に必須）
+reader_browser_profile = Profile 2     ; readerで認可画面を開くChromeのプロファイル（同上）
+mcp_url = http://localhost:3333/mcp    ; 任意。MCPサーバーの接続先（省略時はこの値）
+default_duration = 8h       ; 任意。--duration未指定時の有効期限（未設定なら8h）
 
 [profile customer-a]
 project = CUSTOMER_A        ; Backlogプロジェクトキー
@@ -95,31 +97,45 @@ def _parse_default(parser: configparser.ConfigParser) -> DefaultConfig:
             return None
         return value.strip()
 
+    # 無期限のキーの参照を config に残さないため、値が空でもエラーにする。
+    for key in _REMOVED_API_KEY_REFS:
+        if key in section:
+            raise ConfigError(
+                f"[default]: {key} は使えません。"
+                f"仮想ユーザーは OAuth で認証するため、config から {key} の行を削除してください"
+            )
+
     writer_user = _optional("writer_user")
-    writer_api_key_ref = _optional("writer_api_key_ref")
     reader_user = _optional("reader_user")
-    reader_api_key_ref = _optional("reader_api_key_ref")
-
-    if bool(writer_user) != bool(writer_api_key_ref):
-        raise ConfigError("[default]: writer_user と writer_api_key_ref はペアで設定してください")
-    if bool(reader_user) != bool(reader_api_key_ref):
-        raise ConfigError("[default]: reader_user と reader_api_key_ref はペアで設定してください")
     if writer_user is None and reader_user is None:
-        raise ConfigError(
-            "[default]: writer_user/writer_api_key_ref または reader_user/reader_api_key_ref の"
-            "少なくとも一方を設定してください"
-        )
+        raise ConfigError("[default]: writer_user または reader_user の少なくとも一方を設定してください")
 
-    default_duration_raw = section.get("default_duration")
-    default_duration = default_duration_raw.strip() if default_duration_raw else None
+    mcp_url = _optional("mcp_url") or DEFAULT_MCP_URL
+    _validate_mcp_url(mcp_url)
+
     return DefaultConfig(
         space=space,
         writer_user=writer_user,
         reader_user=reader_user,
-        writer_api_key_ref=writer_api_key_ref,
-        reader_api_key_ref=reader_api_key_ref,
-        default_duration=default_duration or None,
+        default_duration=_optional("default_duration"),
+        mcp_url=mcp_url,
+        writer_browser_profile=_optional("writer_browser_profile"),
+        reader_browser_profile=_optional("reader_browser_profile"),
     )
+
+
+#: 仮想ユーザーの API キーの参照先。config に書かれていたらエラーにする。
+_REMOVED_API_KEY_REFS: tuple[str, ...] = ("writer_api_key_ref", "reader_api_key_ref")
+
+
+def _validate_mcp_url(url: str) -> None:
+    """mcp_url のスキームが http / https で、ホストがあることを確かめる。"""
+    parts = urlsplit(url)
+    if parts.scheme not in ("http", "https") or not parts.hostname:
+        raise ConfigError(
+            "[default]: mcp_url は http:// または https:// で始まり、ホストを含む URL にしてください"
+            f"（指定値: '{url}'）"
+        )
 
 
 def _parse_profiles(parser: configparser.ConfigParser) -> dict[str, Profile]:
@@ -160,7 +176,12 @@ def load_config(path: Path | None = None) -> Config:
         sys.exit(1)
 
     parser = configparser.ConfigParser(inline_comment_prefixes=(";",))
-    parser.read(config_path, encoding="utf-8")
+    try:
+        parser.read(config_path, encoding="utf-8")
+    except configparser.Error as exc:
+        raise ConfigError(
+            f"設定ファイルを INI 形式として読めません: {config_path}（{exc.__class__.__name__}）"
+        ) from exc
 
     default = _parse_default(parser)
     profiles = _parse_profiles(parser)

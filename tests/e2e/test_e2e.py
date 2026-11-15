@@ -231,7 +231,8 @@ class TestE2EFlow:
 
         # stdout/stderr分離の確認: eval対象(export行)はstdoutのみに出て、stderrに"export "行は現れない。
         exported = _exported_var_names(result.stdout)
-        assert exported == {"BACKLOG_API_KEY", "BACKLOG_SPACE", "BACKLOG_DOMAIN", "BACKLOG_PROJECT"}
+        assert exported == {"BACKLOG_SPACE", "BACKLOG_DOMAIN", "BACKLOG_PROJECT", "BSWITCH_MCP_URL"}
+        assert _unset_var_names(result.stdout) == {"BACKLOG_API_KEY"}
         assert "export " not in result.stderr
 
         # 排他動作の実機確認: readerが除名され、writerが参加している。
@@ -394,7 +395,13 @@ class TestE2EFlow:
 
         # stdout/stderr分離の確認: unset行はstdoutのみ、確認メッセージはstderrのみ。
         unset_names = _unset_var_names(result.stdout)
-        assert unset_names == {"BACKLOG_API_KEY", "BACKLOG_SPACE", "BACKLOG_DOMAIN", "BACKLOG_PROJECT"}
+        assert unset_names == {
+            "BACKLOG_API_KEY",
+            "BACKLOG_SPACE",
+            "BACKLOG_DOMAIN",
+            "BACKLOG_PROJECT",
+            "BSWITCH_MCP_URL",
+        }
         assert "除名しました" in result.stderr
         assert "unset " not in result.stderr
 

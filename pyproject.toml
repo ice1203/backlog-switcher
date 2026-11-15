@@ -11,6 +11,7 @@ dependencies = [
 
 [project.scripts]
 bswitch = "bswitch.cli:main"
+bswitch-open-browser = "bswitch.open_browser:main"
 
 [build-system]
 requires = ["hatchling"]

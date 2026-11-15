@@ -25,7 +25,6 @@ from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 
 from bswitch.api import BacklogClient
-from bswitch.keys import compute_fingerprint, resolve_api_key
 from bswitch.models import DefaultConfig, Grant, Profile, State
 from bswitch.shell import make_export_lines, make_unset_lines
 
@@ -83,6 +82,19 @@ def _is_expired(grant: Grant, now: datetime) -> bool:
     if expires.tzinfo is None:
         expires = expires.replace(tzinfo=UTC)
     return expires <= now
+
+
+#: 期限内の付与がないときのエラーメッセージ（`restore` と `bswitch-open-browser` で使う）。
+NO_ACTIVE_GRANT_MESSAGE = "有効な付与がありません。`bswitch switch <profile>` を実行してください"
+
+
+def active_grants(state: State, now: datetime | None = None) -> list[Grant]:
+    """期限内の付与（期限ちょうどは期限切れ扱い）を記録の順に返す。
+
+    `restore` と `bswitch-open-browser` が使う。Backlog API は呼ばない。
+    """
+    current = now if now is not None else datetime.now(UTC)
+    return [g for g in state.grants if not _is_expired(g, current)]
 
 
 def _all_projects(profiles: list[Profile]) -> list[str]:
@@ -201,7 +213,7 @@ def switch(
     Args:
         profiles: 対象として選択されたプロファイル（1件以上）。
         all_profiles: config定義済みの全プロファイル（config定義外プロジェクトの操作除外に使用）。
-        config: `[default]` セクション（space・仮想ユーザー・APIキー参照）。
+        config: `[default]` セクション（space・仮想ユーザー・mcp_url）。
         duration: `--duration` の値（未指定なら None）。
         client: マスターユーザーのAPIキーで初期化された BacklogClient。
         state: 現在の状態（このオブジェクトを直接変更する）。
@@ -272,7 +284,7 @@ def switch(
         _save()
 
     # 6. 対象プロファイルのプロジェクトに参加させる（継続プロジェクトは参加API省略）。
-    #    参加が成功するたびにGrantを記録・保存する（後続の管理者付与・APIキー解決が
+    #    参加が成功するたびにGrantを記録・保存する（後続の管理者付与が
     #    失敗しても、参加済みの事実が記録に残り次回switchの除名で回収できる）。
     new_grants: list[Grant] = []
     effective_permissions: list[str] = []
@@ -332,11 +344,6 @@ def switch(
 
     # 7. stdout出力行の生成
     overall = max(effective_permissions, key=lambda p: _PERMISSION_RANK[p])
-    api_key = resolve_api_key(overall, config)
-
-    fingerprint = compute_fingerprint(api_key)
-    for g in new_grants:
-        g.key_fingerprint = fingerprint
 
     project_for_output: str | None
     if len(profiles) == 1:
@@ -345,38 +352,18 @@ def switch(
         project_for_output = None
         print("複数プロジェクトのため BACKLOG_PROJECT は未設定です", file=sys.stderr)
 
-    lines = make_export_lines(api_key, config.space, project_for_output)
+    lines = make_export_lines(config.space, project_for_output, config.mcp_url)
     return lines, overall
 
 
-def restore(config: DefaultConfig, state: State) -> list[str]:
-    """state.jsonに記録された有効な付与に合わせたexport行だけを生成する（`bswitch restore`）。
+def restore(config: DefaultConfig, grants: list[Grant]) -> list[str]:
+    """期限内の付与（`active_grants` の結果、1件以上）に合わせたexport行だけを生成する（`bswitch restore`）。
 
     ユーザーが明示的に実行したときだけ呼ばれる（shell-init等から自動では呼ばない）。
     Backlog APIは一切呼ばず、参加・除名・期限延長も行わない（stateも変更しない）。
-    期限切れの付与は対象外とする（解除はAPIが必要なため、switch/enforce側に任せる）。
-
-    Raises:
-        SwitcherError: 有効な付与が0件の場合、解決したキーが付与記録のfingerprintと一致しない場合。
-        KeyResolutionError: APIキーの解決に失敗した場合。
+    期限切れの付与の解除はAPIが必要なため、switch/enforce側に任せる。
     """
-    now = datetime.now(UTC)
-    active = [g for g in state.grants if not _is_expired(g, now)]
-    if not active:
-        raise SwitcherError("有効な付与がありません。`bswitch switch <profile>` を実行してください")
-
-    overall = max((g.permission for g in active), key=lambda p: _PERMISSION_RANK[p])
-    api_key = resolve_api_key(overall, config)
-
-    # 付与時と異なるキー（1Password側の差し替え等）を黙ってexportしない。
-    # fingerprint未記録の古い付与は照合できないため対象外とする。
-    fingerprint = compute_fingerprint(api_key)
-    if any(g.key_fingerprint is not None and g.key_fingerprint != fingerprint for g in active):
-        raise SwitcherError(
-            "解決したAPIキーが付与記録と一致しません。`bswitch switch <profile>` を実行し直してください"
-        )
-
-    projects = list(dict.fromkeys(g.project for g in active))
+    projects = list(dict.fromkeys(g.project for g in grants))
     project_for_output: str | None
     if len(projects) == 1:
         project_for_output = projects[0]
@@ -384,7 +371,7 @@ def restore(config: DefaultConfig, state: State) -> list[str]:
         project_for_output = None
         print("複数プロジェクトのため BACKLOG_PROJECT は未設定です", file=sys.stderr)
 
-    return make_export_lines(api_key, config.space, project_for_output)
+    return make_export_lines(config.space, project_for_output, config.mcp_url)
 
 
 def release(

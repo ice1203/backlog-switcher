@@ -7,7 +7,7 @@ bswitch を Claude Code の hook と組み合わせ、AI エージェントが�
 | `PreToolUse` | `bswitch_key_guard.sh` | キー整合の強制ブロック（fail-closed） |
 | `SessionStart` | `bswitch_session_guard.sh` | プロジェクト整合の注意喚起（ブロック不可） |
 
-2つの役割分担と、なぜ両方必要なのかは [README](../../README.md) の「8. Claude Code hook 連携」を参照してください。
+2つの役割分担と、なぜ両方必要なのかは [README](../../README.md) の「7. Claude Code hook 連携」を参照してください。
 
 ## 前提
 

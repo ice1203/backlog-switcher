@@ -74,8 +74,6 @@ def _build_e2e_config_content(space: str, writer_email: str, reader_email: str) 
 space = {space}
 writer_user = {writer_email}
 reader_user = {reader_email}
-writer_api_key_ref = op://dummy/not-used
-reader_api_key_ref = op://dummy/not-used
 
 [profile test-read]
 project = MY_PROJECT

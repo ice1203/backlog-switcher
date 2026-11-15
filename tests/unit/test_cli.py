@@ -20,14 +20,14 @@ from bswitch.state import load_state, save_state
 from .conftest import FakeBacklogClient
 
 MASTER_KEY_ENV = "BSWITCH_MASTER_API_KEY"
+MCP_URL_LINE = "export BSWITCH_MCP_URL=http://localhost:3333/mcp"
+UNSET_LINE = "unset BACKLOG_API_KEY BACKLOG_SPACE BACKLOG_DOMAIN BACKLOG_PROJECT BSWITCH_MCP_URL"
 
 CONFIG_INI = """\
 [default]
 space = test-space.backlog.com
 writer_user = 200
 reader_user = 100
-writer_api_key_ref = op://MyVault/backlog-svc-writer/credential
-reader_api_key_ref = op://MyVault/backlog-svc-reader/credential
 
 [profile test-read]
 project = MY_PROJECT
@@ -49,8 +49,6 @@ def config_path(tmp_path: Path) -> Path:
 @pytest.fixture(autouse=True)
 def _common_env(monkeypatch: pytest.MonkeyPatch, config_path: Path) -> None:
     monkeypatch.setenv("BSWITCH_CONFIG", str(config_path))
-    monkeypatch.setenv("BACKLOG_READER_API_KEY", "reader-dummy-key")
-    monkeypatch.setenv("BACKLOG_WRITER_API_KEY", "writer-dummy-key")
 
 
 def test_missing_master_key_exits_with_error(
@@ -65,6 +63,26 @@ def test_missing_master_key_exits_with_error(
     assert excinfo.value.code == 1
     captured = capsys.readouterr()
     assert MASTER_KEY_ENV in captured.err
+
+
+def test_invalid_config_exits_1_with_error_message(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], config_path: Path
+) -> None:
+    """config の誤り (ConfigError) は、トレースバックではなく「エラー: <メッセージ>」で exit 1 にする。"""
+    config_path.write_text(
+        CONFIG_INI.replace("reader_user = 100\n", "reader_user = 100\nwriter_api_key_ref = op://v/i/f\n"),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(sys, "argv", ["bswitch", "list"])
+
+    with pytest.raises(SystemExit) as excinfo:
+        cli.main()
+
+    assert excinfo.value.code == 1
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert captured.err.startswith("エラー: ")
+    assert "writer_api_key_ref の行を削除してください" in captured.err
 
 
 def test_bswitch_does_not_read_backlog_api_key(
@@ -125,7 +143,7 @@ def test_bare_bswitch_defaults_to_switch(monkeypatch: pytest.MonkeyPatch, capsys
     cli.main()
 
     captured = capsys.readouterr()
-    assert "export BACKLOG_API_KEY=" in captured.out
+    assert MCP_URL_LINE in captured.out
 
 
 def test_switch_end_to_end_with_fake_client(
@@ -139,27 +157,17 @@ def test_switch_end_to_end_with_fake_client(
     cli.main()
 
     captured = capsys.readouterr()
-    assert "export BACKLOG_API_KEY=reader-dummy-key" in captured.out
+    assert "export BACKLOG_API_KEY" not in captured.out
+    assert "unset BACKLOG_API_KEY" in captured.out
+    assert MCP_URL_LINE in captured.out
     assert "export BACKLOG_PROJECT=MY_PROJECT" in captured.out
     assert 100 in fake.members.get("MY_PROJECT", set())
 
 
-def test_switch_write_uses_writer_key(monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
-    monkeypatch.setenv(MASTER_KEY_ENV, "dummy-master-key")
-    fake = FakeBacklogClient()
-    monkeypatch.setattr(cli, "BacklogClient", lambda *_a, **_kw: fake)
-    monkeypatch.setattr(sys, "argv", ["bswitch", "switch", "test-write"])
-
-    cli.main()
-
-    captured = capsys.readouterr()
-    assert "export BACKLOG_API_KEY=writer-dummy-key" in captured.out
-
-
-def test_switch_masks_api_key_when_stdout_is_a_tty(
+def test_switch_prints_values_unmasked_with_warning_when_stdout_is_a_tty(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    """シェル統合を使わずターミナルへ直接出力する場合、APIキーの値は伏せて表示する。"""
+    """テストケース16: ターミナルに直接出力するときは、警告を出し、値を伏せずに出力する。"""
     monkeypatch.setenv(MASTER_KEY_ENV, "dummy-master-key")
     fake = FakeBacklogClient()
     monkeypatch.setattr(cli, "BacklogClient", lambda *_a, **_kw: fake)
@@ -169,17 +177,17 @@ def test_switch_masks_api_key_when_stdout_is_a_tty(
     cli.main()
 
     captured = capsys.readouterr()
-    assert "export BACKLOG_API_KEY=********" in captured.out
-    assert "reader-dummy-key" not in captured.out
-    # APIキー以外のexport行は隠さない。
+    assert MCP_URL_LINE in captured.out
+    assert "export BACKLOG_SPACE=test-space.backlog.com" in captured.out
     assert "export BACKLOG_PROJECT=MY_PROJECT" in captured.out
+    assert "********" not in captured.out
     assert "シェル統合" in captured.err
 
 
-def test_switch_shows_real_key_when_stdout_is_not_a_tty(
+def test_switch_does_not_warn_when_stdout_is_not_a_tty(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    """シェル関数のeval経由（stdoutがtty以外）では、従来通り実際のキー値を出力する。"""
+    """シェル関数の eval 経由（stdout が tty 以外）では警告を出さない。"""
     monkeypatch.setenv(MASTER_KEY_ENV, "dummy-master-key")
     fake = FakeBacklogClient()
     monkeypatch.setattr(cli, "BacklogClient", lambda *_a, **_kw: fake)
@@ -189,7 +197,8 @@ def test_switch_shows_real_key_when_stdout_is_not_a_tty(
     cli.main()
 
     captured = capsys.readouterr()
-    assert "export BACKLOG_API_KEY=reader-dummy-key" in captured.out
+    assert MCP_URL_LINE in captured.out
+    assert "シェル統合" not in captured.err
 
 
 def test_release_end_to_end_with_fake_client(
@@ -211,7 +220,7 @@ def test_release_end_to_end_with_fake_client(
     cli.main()
 
     captured = capsys.readouterr()
-    assert "unset BACKLOG_API_KEY BACKLOG_SPACE BACKLOG_DOMAIN BACKLOG_PROJECT" in captured.out
+    assert UNSET_LINE in captured.out
     assert fake.members["MY_PROJECT"] == set()
     assert load_state(state_path).grants == []
 
@@ -229,7 +238,7 @@ def test_release_default_without_grants_does_not_call_api(
     cli.main()
 
     captured = capsys.readouterr()
-    assert "unset BACKLOG_API_KEY BACKLOG_SPACE BACKLOG_DOMAIN BACKLOG_PROJECT" in captured.out
+    assert UNSET_LINE in captured.out
     assert fake.members["MY_PROJECT"] == {100}
     assert fake.call_log == []
 
@@ -247,7 +256,7 @@ def test_release_all_sweeps_config_projects_even_without_grants(
     cli.main()
 
     captured = capsys.readouterr()
-    assert "unset BACKLOG_API_KEY BACKLOG_SPACE BACKLOG_DOMAIN BACKLOG_PROJECT" in captured.out
+    assert UNSET_LINE in captured.out
     assert fake.members["MY_PROJECT"] == set()
 
 
@@ -498,6 +507,7 @@ def test_check_includes_project_in_fixed_key_order(
 def test_restore_exports_without_master_key_or_api_calls(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], config_path: Path, command: str
 ) -> None:
+    """テストケース11 / 12: 期限内の付与があるとき switch と同じ変数を出力する (fingerprint 付きの古い記録でも)。"""
     state_path = config_path.parent / "state.json"
     save_state(
         state_path,
@@ -509,7 +519,7 @@ def test_restore_exports_without_master_key_or_api_calls(
                     user_id=200,
                     permission="write",
                     expires_at=None,
-                    key_fingerprint=compute_fingerprint("writer-dummy-key"),
+                    key_fingerprint=compute_fingerprint("old-writer-key"),
                 )
             ]
         ),
@@ -525,13 +535,16 @@ def test_restore_exports_without_master_key_or_api_calls(
     cli.main()
 
     captured = capsys.readouterr()
-    assert "export BACKLOG_API_KEY=writer-dummy-key" in captured.out
+    assert "export BACKLOG_API_KEY" not in captured.out
+    assert "unset BACKLOG_API_KEY" in captured.out
+    assert MCP_URL_LINE in captured.out
     assert "export BACKLOG_PROJECT=MY_PROJECT" in captured.out
 
 
-def test_restore_without_grants_exits_with_error(
+def test_restore_without_grants_exits_1_and_prints_unset_line(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
+    """テストケース13: 付与が0件のとき exit 1 になり、stdout に BSWITCH_MCP_URL を含む unset 行を出す。"""
     monkeypatch.setattr(sys, "argv", ["bswitch", "restore"])
 
     with pytest.raises(SystemExit) as excinfo:
@@ -539,5 +552,5 @@ def test_restore_without_grants_exits_with_error(
 
     assert excinfo.value.code == 1
     captured = capsys.readouterr()
-    assert captured.out == ""
+    assert captured.out.splitlines() == [UNSET_LINE]
     assert "bswitch switch" in captured.err

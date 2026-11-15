@@ -7,6 +7,9 @@ from dataclasses import dataclass, field
 #: 有効な権限レベル。
 PERMISSIONS: tuple[str, ...] = ("read", "write", "admin")
 
+#: config の `mcp_url` を省略したときの MCP サーバーの接続先。
+DEFAULT_MCP_URL = "http://localhost:3333/mcp"
+
 
 @dataclass(frozen=True)
 class Profile:
@@ -24,9 +27,12 @@ class DefaultConfig:
     space: str
     writer_user: str | None = None
     reader_user: str | None = None
-    writer_api_key_ref: str | None = None
-    reader_api_key_ref: str | None = None
     default_duration: str | None = None
+    #: MCP サーバーの接続先。`BSWITCH_MCP_URL` の値と、認可画面の振り分けに使う。
+    mcp_url: str = DEFAULT_MCP_URL
+    #: 認可画面を開く Chrome のプロファイル名 (`--profile-directory` の値)。
+    writer_browser_profile: str | None = None
+    reader_browser_profile: str | None = None
 
 
 @dataclass
@@ -38,7 +44,9 @@ class Grant:
     user_id: int
     permission: str  # "read" | "write" | "admin"
     expires_at: str | None = None  # ISO8601 or None（無期限）
-    key_fingerprint: str | None = None  # sha256(key[:5]+key[-5:]) の hex。APIキーそのものは含まない
+    # sha256(key[:5]+key[-5:]) の hex。APIキーそのものは含まない。
+    # switch は記録しない。古い state.json の読み込みと `check` のために残している。
+    key_fingerprint: str | None = None
 
     def to_dict(self) -> dict[str, object]:
         return {
