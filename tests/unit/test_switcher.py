@@ -16,21 +16,12 @@ import pytest
 
 from bswitch import switcher
 from bswitch.api import BacklogApiError
-from bswitch.keys import compute_fingerprint
-from bswitch.models import DefaultConfig, Grant, Profile, State
+from bswitch.models import DEFAULT_MCP_URL, DefaultConfig, Grant, Profile, State
 
 from .conftest import FakeBacklogClient
 
-#: switch()内のresolve_api_key呼び出しがsubprocess(op)を叩かないよう、
-#: 全テストで環境変数フォールバックのダミーキーを注入する。
-WRITER_KEY = "writer-dummy-key"
-READER_KEY = "reader-dummy-key"
-
-
-@pytest.fixture(autouse=True)
-def _api_key_env(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("BACKLOG_WRITER_API_KEY", WRITER_KEY)
-    monkeypatch.setenv("BACKLOG_READER_API_KEY", READER_KEY)
+#: `switch` / `restore` の出力に必ず含まれる行（mcp_url は既定値）。
+MCP_URL_LINE = f"export BSWITCH_MCP_URL={DEFAULT_MCP_URL}"
 
 
 # ---------------------------------------------------------------------------
@@ -73,7 +64,7 @@ def test_switch_exclusive_removal_precedes_add(
     # --duration/default_duration未指定時はプログラム既定値(8h)が適用される(無期限にはならない)。
     expires = datetime.fromisoformat(grant.expires_at)  # type: ignore[arg-type]
     assert timedelta(hours=7, minutes=55) < expires - datetime.now(UTC) <= timedelta(hours=8, minutes=1)
-    assert f"export BACKLOG_API_KEY={READER_KEY}" in lines
+    assert MCP_URL_LINE in lines
 
 
 def test_switch_does_not_sweep_unrelated_config_projects(
@@ -357,7 +348,7 @@ def test_multi_write_and_admin_mixed_is_allowed(
     assert overall == "admin"
     assert {g.project for g in state.grants} == {"P1", "P2"}
     assert all(g.user_id == 200 for g in state.grants)  # どちらもwriter
-    assert f"export BACKLOG_API_KEY={WRITER_KEY}" in lines
+    assert MCP_URL_LINE in lines
 
 
 # ---------------------------------------------------------------------------
@@ -407,7 +398,7 @@ def test_admin_degrades_to_write_on_permission_error(
     assert "警告" in captured.err
     assert "write" in captured.err
     # 異常終了しないこと（例外が飛ばず正常にexport行が返る）。
-    assert f"export BACKLOG_API_KEY={WRITER_KEY}" in lines
+    assert MCP_URL_LINE in lines
 
 
 def test_admin_degrades_to_write_updates_grant_profile(
@@ -449,8 +440,6 @@ def _email_config(default_duration: str | None = None) -> DefaultConfig:
         space="test-space.backlog.com",
         writer_user="writer@example.com",
         reader_user="reader@example.com",
-        writer_api_key_ref="op://MyVault/backlog-svc-writer/credential",
-        reader_api_key_ref="op://MyVault/backlog-svc-reader/credential",
         default_duration=default_duration,
     )
 
@@ -529,8 +518,6 @@ def test_default_duration_applied_when_duration_not_specified(fake_client: FakeB
         space="test-space.backlog.com",
         writer_user="200",
         reader_user="100",
-        writer_api_key_ref="op://MyVault/backlog-svc-writer/credential",
-        reader_api_key_ref="op://MyVault/backlog-svc-reader/credential",
         default_duration="8h",
     )
     profile = Profile(name="w", project="P1", permission="write")
@@ -547,8 +534,6 @@ def test_explicit_duration_overrides_default_duration(fake_client: FakeBacklogCl
         space="test-space.backlog.com",
         writer_user="200",
         reader_user="100",
-        writer_api_key_ref="op://MyVault/backlog-svc-writer/credential",
-        reader_api_key_ref="op://MyVault/backlog-svc-reader/credential",
         default_duration="8h",
     )
     profile = Profile(name="w", project="P1", permission="write")
@@ -688,7 +673,7 @@ def test_release_idempotent_when_nobody_is_participating(
     lines = switcher.release(numeric_config, all_profiles, fake_client, state)
 
     assert state.grants == []
-    assert lines == ["unset BACKLOG_API_KEY BACKLOG_SPACE BACKLOG_DOMAIN BACKLOG_PROJECT"]
+    assert lines == ["unset BACKLOG_API_KEY BACKLOG_SPACE BACKLOG_DOMAIN BACKLOG_PROJECT BSWITCH_MCP_URL"]
 
 
 def test_release_removes_participating_users(
@@ -733,7 +718,7 @@ def test_release_default_with_no_grants_makes_no_api_calls(
     lines = switcher.release(numeric_config, all_profiles, fake_client, State())
 
     assert fake_client.call_log == []
-    assert lines == ["unset BACKLOG_API_KEY BACKLOG_SPACE BACKLOG_DOMAIN BACKLOG_PROJECT"]
+    assert lines == ["unset BACKLOG_API_KEY BACKLOG_SPACE BACKLOG_DOMAIN BACKLOG_PROJECT BSWITCH_MCP_URL"]
 
 
 def test_release_default_skips_api_for_project_missing_from_config(
@@ -801,39 +786,6 @@ def test_permission_maps_to_correct_virtual_user(
     assert state.grants[0].user_id == 200  # writer
 
 
-def test_switch_read_uses_reader_key_in_export_output(
-    fake_client: FakeBacklogClient, numeric_config: DefaultConfig, state: State
-) -> None:
-    profile = Profile(name="r", project="P1", permission="read")
-
-    lines, overall = switcher.switch([profile], [profile], numeric_config, None, fake_client, state)
-
-    assert overall == "read"
-    assert f"export BACKLOG_API_KEY={READER_KEY}" in lines
-
-
-def test_switch_write_uses_writer_key_in_export_output(
-    fake_client: FakeBacklogClient, numeric_config: DefaultConfig, state: State
-) -> None:
-    profile = Profile(name="w", project="P1", permission="write")
-
-    lines, overall = switcher.switch([profile], [profile], numeric_config, None, fake_client, state)
-
-    assert overall == "write"
-    assert f"export BACKLOG_API_KEY={WRITER_KEY}" in lines
-
-
-def test_switch_admin_uses_writer_key_in_export_output(
-    fake_client: FakeBacklogClient, numeric_config: DefaultConfig, state: State
-) -> None:
-    profile = Profile(name="a", project="P1", permission="admin")
-
-    lines, overall = switcher.switch([profile], [profile], numeric_config, None, fake_client, state)
-
-    assert overall == "admin"
-    assert f"export BACKLOG_API_KEY={WRITER_KEY}" in lines
-
-
 # ---------------------------------------------------------------------------
 # get_status
 # ---------------------------------------------------------------------------
@@ -899,7 +851,6 @@ def test_switch_read_profile_without_reader_config_raises(fake_client: FakeBackl
     config = DefaultConfig(
         space="test-space.backlog.com",
         writer_user="200",
-        writer_api_key_ref="op://MyVault/backlog-svc-writer/credential",
     )
     profile = Profile(name="r", project="P1", permission="read")
 
@@ -913,7 +864,6 @@ def test_switch_write_profile_without_writer_config_raises(fake_client: FakeBack
     config = DefaultConfig(
         space="test-space.backlog.com",
         reader_user="100",
-        reader_api_key_ref="op://MyVault/backlog-svc-reader/credential",
     )
     profile = Profile(name="w", project="P1", permission="write")
 
@@ -923,14 +873,10 @@ def test_switch_write_profile_without_writer_config_raises(fake_client: FakeBack
     assert fake_client.call_log == []
 
 
-def test_switch_writer_only_config_works_for_write_permission(
-    fake_client: FakeBacklogClient, state: State, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    monkeypatch.setenv("BACKLOG_WRITER_API_KEY", WRITER_KEY)
+def test_switch_writer_only_config_works_for_write_permission(fake_client: FakeBacklogClient, state: State) -> None:
     config = DefaultConfig(
         space="test-space.backlog.com",
         writer_user="200",
-        writer_api_key_ref="op://MyVault/backlog-svc-writer/credential",
     )
     profile = Profile(name="w", project="P1", permission="write")
 
@@ -941,15 +887,53 @@ def test_switch_writer_only_config_works_for_write_permission(
 
 
 # ---------------------------------------------------------------------------
-# restore: 付与記録に合わせた環境変数の再出力（APIを呼ばない）
+# switch / restore / release の出力 (テストケース 7〜15)
 # ---------------------------------------------------------------------------
 
 
-def _restore_grant(
+def test_switch_outputs_mcp_url_and_unsets_api_key(
+    fake_client: FakeBacklogClient, numeric_config: DefaultConfig, state: State
+) -> None:
+    """テストケース7: export BACKLOG_API_KEY がなく、unset BACKLOG_API_KEY と export BSWITCH_MCP_URL がある。"""
+    profile = Profile(name="p", project="P1", permission="write")
+
+    lines, _ = switcher.switch([profile], [profile], numeric_config, None, fake_client, state)
+
+    assert not any(line.startswith("export BACKLOG_API_KEY") for line in lines)
+    assert "unset BACKLOG_API_KEY" in lines
+    assert MCP_URL_LINE in lines
+    assert "export BACKLOG_SPACE=test-space.backlog.com" in lines
+    assert "export BACKLOG_DOMAIN=test-space.backlog.com" in lines
+    assert "export BACKLOG_PROJECT=P1" in lines
+
+
+def test_switch_outputs_configured_mcp_url(fake_client: FakeBacklogClient, state: State) -> None:
+    """テストケース7: BSWITCH_MCP_URL は config の mcp_url の値そのまま。"""
+    config = DefaultConfig(space="test-space.backlog.com", writer_user="200", mcp_url="https://mcp.example.com/mcp")
+    profile = Profile(name="w", project="P1", permission="write")
+
+    lines, _ = switcher.switch([profile], [profile], config, None, fake_client, state)
+
+    assert "export BSWITCH_MCP_URL=https://mcp.example.com/mcp" in lines
+
+
+def test_switch_does_not_record_key_fingerprint(
+    fake_client: FakeBacklogClient, numeric_config: DefaultConfig, state: State
+) -> None:
+    """テストケース10: switch した後の付与に fingerprint が記録されない。"""
+    profile_a = Profile(name="a", project="P1", permission="write")
+    profile_b = Profile(name="b", project="P2", permission="admin")
+
+    switcher.switch([profile_a, profile_b], [profile_a, profile_b], numeric_config, None, fake_client, state)
+
+    assert len(state.grants) == 2
+    assert all(g.key_fingerprint is None for g in state.grants)
+
+
+def _grant(
     permission: str,
     *,
     project: str = "P1",
-    key: str | None = READER_KEY,
     expires_at: str | None = None,
 ) -> Grant:
     return Grant(
@@ -958,74 +942,74 @@ def _restore_grant(
         user_id=100 if permission == "read" else 200,
         permission=permission,
         expires_at=expires_at,
-        key_fingerprint=compute_fingerprint(key) if key is not None else None,
     )
 
 
-def test_restore_exports_reader_key_for_read_grant(numeric_config: DefaultConfig) -> None:
-    state = State(grants=[_restore_grant("read")])
+def test_restore_outputs_same_lines_as_switch(
+    fake_client: FakeBacklogClient, numeric_config: DefaultConfig, state: State
+) -> None:
+    """テストケース11: 期限内の付与があるとき、restore は switch と同じ変数を出力する。"""
+    profile = Profile(name="p", project="P1", permission="write")
+    switch_lines, _ = switcher.switch([profile], [profile], numeric_config, None, fake_client, state)
 
-    lines = switcher.restore(numeric_config, state)
+    restore_lines = switcher.restore(numeric_config, switcher.active_grants(state))
 
-    assert f"export BACKLOG_API_KEY={READER_KEY}" in lines
+    assert restore_lines == switch_lines
+
+
+def test_restore_accepts_old_state_with_fingerprint(numeric_config: DefaultConfig) -> None:
+    """テストケース12: fingerprint が記録された古い state.json でも restore はエラーにならない。"""
+    state = State.from_dict(
+        {
+            "grants": [
+                {
+                    "profile": "P1-read",
+                    "project": "P1",
+                    "user_id": 100,
+                    "permission": "read",
+                    "expires_at": None,
+                    "key_fingerprint": "0" * 64,
+                }
+            ],
+            "user_id_cache": {},
+        }
+    )
+
+    lines = switcher.restore(numeric_config, switcher.active_grants(state))
+
+    assert MCP_URL_LINE in lines
     assert "export BACKLOG_PROJECT=P1" in lines
 
 
-def test_restore_exports_writer_key_for_write_grant(numeric_config: DefaultConfig) -> None:
-    state = State(grants=[_restore_grant("write", key=WRITER_KEY)])
+def test_active_grants_returns_only_unexpired_grants_and_treats_exact_expiry_as_expired() -> None:
+    """テストケース14: 期限切れ (期限ちょうどを含む) の付与を除き、記録の順に返す。"""
+    now = datetime(2026, 11, 14, 12, 0, 0, tzinfo=UTC)
+    active = _grant("write", project="P1", expires_at=(now + timedelta(seconds=1)).isoformat())
+    unlimited = _grant("write", project="P2", expires_at=None)
+    expired = _grant("write", project="P3", expires_at=(now - timedelta(seconds=1)).isoformat())
+    exact = _grant("write", project="P4", expires_at=now.isoformat())
+    state = State(grants=[active, expired, unlimited, exact])
 
-    lines = switcher.restore(numeric_config, state)
-
-    assert f"export BACKLOG_API_KEY={WRITER_KEY}" in lines
-
-
-def test_restore_does_not_modify_state(numeric_config: DefaultConfig) -> None:
-    future = (datetime.now(UTC) + timedelta(hours=1)).isoformat()
-    state = State(grants=[_restore_grant("read", expires_at=future)])
-    before = state.to_dict()
-
-    switcher.restore(numeric_config, state)
-
-    assert state.to_dict() == before
-
-
-def test_restore_ignores_expired_grants(numeric_config: DefaultConfig) -> None:
-    past = (datetime.now(UTC) - timedelta(seconds=1)).isoformat()
-    state = State(grants=[_restore_grant("read", expires_at=past)])
-
-    with pytest.raises(switcher.SwitcherError, match="有効な付与がありません"):
-        switcher.restore(numeric_config, state)
-
-
-def test_restore_without_grants_raises(numeric_config: DefaultConfig) -> None:
-    with pytest.raises(switcher.SwitcherError, match="有効な付与がありません"):
-        switcher.restore(numeric_config, State())
-
-
-def test_restore_fingerprint_mismatch_raises(numeric_config: DefaultConfig) -> None:
-    state = State(grants=[_restore_grant("read", key="rotated-old-key")])
-
-    with pytest.raises(switcher.SwitcherError, match="一致しません"):
-        switcher.restore(numeric_config, state)
-
-
-def test_restore_grant_without_fingerprint_is_allowed(numeric_config: DefaultConfig) -> None:
-    state = State(grants=[_restore_grant("read", key=None)])
-
-    lines = switcher.restore(numeric_config, state)
-
-    assert f"export BACKLOG_API_KEY={READER_KEY}" in lines
+    assert switcher.active_grants(state, now=now) == [active, unlimited]
 
 
 def test_restore_multiple_projects_unsets_backlog_project(numeric_config: DefaultConfig) -> None:
-    state = State(
-        grants=[
-            _restore_grant("write", project="P1", key=WRITER_KEY),
-            _restore_grant("admin", project="P2", key=WRITER_KEY),
-        ]
-    )
+    grants = [_grant("write", project="P1"), _grant("admin", project="P2")]
 
-    lines = switcher.restore(numeric_config, state)
+    lines = switcher.restore(numeric_config, grants)
 
-    assert f"export BACKLOG_API_KEY={WRITER_KEY}" in lines
+    assert MCP_URL_LINE in lines
     assert "unset BACKLOG_PROJECT" in lines
+
+
+def test_release_unset_line_includes_mcp_url_and_api_key(
+    fake_client: FakeBacklogClient, numeric_config: DefaultConfig
+) -> None:
+    """テストケース15: release の unset 行に BSWITCH_MCP_URL と BACKLOG_API_KEY が含まれる。"""
+    profile = Profile(name="w", project="P1", permission="write")
+    state = State(grants=[_grant("write", project="P1")])
+
+    lines = switcher.release(numeric_config, [profile], fake_client, state)
+
+    unset_names = {name for line in lines if line.startswith("unset ") for name in line.split()[1:]}
+    assert {"BSWITCH_MCP_URL", "BACKLOG_API_KEY"} <= unset_names

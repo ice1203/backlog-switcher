@@ -17,9 +17,47 @@ Backlogでは「何ができるか（閲覧のみ/編集可）」はユーザー
 
 1. config定義済みの**全プロジェクト**から両仮想ユーザーを除名（排他動作）
 2. 対象プロジェクトへ、permissionに応じた仮想ユーザーだけを参加させる
-3. 現在のシェルに `BACKLOG_API_KEY` / `BACKLOG_SPACE` / `BACKLOG_DOMAIN` / `BACKLOG_PROJECT` を反映する
+3. 現在のシェルに `BACKLOG_SPACE` / `BACKLOG_DOMAIN` / `BACKLOG_PROJECT` / `BSWITCH_MCP_URL` を反映する
 
-APIキーを常時保持させてよい構造です。キー自体の能力が「参加状況」で絞られるため、常時強い権限のキーを渡すより安全になります。
+仮想ユーザーは Backlog MCP サーバーの OAuth で認証します。OAuth のトークンにはスコープがなく、認可した仮想ユーザーの権限をすべて持ちますが、仮想ユーザーにできることは「参加しているプロジェクト」で絞られるため、強い権限のユーザーで AI に操作させるより安全になります。
+
+### 1.1 Claude Code から Backlog を操作する仕組み
+
+Claude Code からは、Backlog 公式の MCP サーバーを OAuth モードで動かして Backlog を操作します。仮想ユーザーの参加・除名は bswitch が行い、MCP サーバーは仮想ユーザーとして認可されたトークンで Backlog を操作します。Claude Code の環境変数 `BROWSER` に bswitch 同梱の `bswitch-open-browser` を設定しておくと、MCP の認可画面は、そのとき付与中の仮想ユーザーの Chrome プロファイルで開きます。付与がないときは認可画面を開かないため、マスターユーザーとして認可されることはありません。
+
+MCP サーバーの接続先は、`bswitch switch` がシェルに設定する環境変数 `BSWITCH_MCP_URL` で Claude Code に登録します。`bswitch switch` を実行したシェルで起動した Claude Code だけが MCP サーバーにつながり、それ以外のターミナルで起動した Claude Code からは Backlog を操作できません。
+
+```mermaid
+sequenceDiagram
+    actor 人 as 利用者
+    box 手元の Mac
+        participant bswitch
+        participant Claude as Claude Code
+        participant Browser as Chrome<br/>(仮想ユーザー用プロファイル)
+        participant MCP as Backlog MCP サーバー<br/>(Docker, localhost:3333)
+    end
+    box インターネット
+        participant Backlog as Backlog スペース
+    end
+
+    人->>bswitch: bswitch switch customer-a
+    bswitch->>Backlog: マスターとして、仮想ユーザーを<br/>プロジェクトに参加させる
+    bswitch->>人: このシェルに BSWITCH_MCP_URL を設定
+
+    人->>Claude: 同じシェルで claude を起動し /mcp で認証
+    Claude->>Browser: 認可画面を開く (bswitch-open-browser が<br/>付与中の仮想ユーザーのプロファイルを選ぶ)
+    人->>Browser: 仮想ユーザーとして許可
+    Browser->>MCP: 認可コード
+    MCP->>Backlog: トークンを取得 (仮想ユーザー)
+
+    人->>Claude: 「課題を一覧して」
+    Claude->>MCP: MCP ツールを呼ぶ
+    MCP->>Backlog: 仮想ユーザーとして API を呼ぶ<br/>(参加中のプロジェクトだけ見える)
+```
+
+bswitch は、どの仮想ユーザー (reader / writer) をどのプロジェクトに参加させるかをコントロールします。AI は MCP サーバーを通じて、MCP サーバーで認可した (ログインした) 仮想ユーザーとして Backlog を操作します。どの仮想ユーザーで認可するかによって、AI が操作できる範囲が変わります。
+
+仕様の詳細と出典は [docs/api.md](docs/api.md) の「OAuth 2.0」を参照してください。
 
 ## 2. セットアップ手順
 
@@ -53,7 +91,25 @@ uv tool install -e .
 
 ソースコードを変更すればすぐ反映されます。
 
-### 2.2 config作成
+### 2.2 Chrome プロファイルと開発アプリの準備
+
+1. 仮想ユーザー (reader / writer) ごとに Chrome プロファイルを作り、それぞれの仮想ユーザーで Backlog スペースにログインする
+2. Backlog Developer サイト (https://backlog.com/developer/applications/) で MCP サーバー用の開発アプリを登録し、Client ID と Client Secret を 1Password に保存する
+
+   <details>
+   <summary>登録画面の入力内容</summary>
+
+   「Manage application」から Nulab アカウントでログインし、「Register new application」で次を入力して「Create」を押します。
+
+   - Redirect URI: `http://localhost:3333/callback`
+   - Application name: Backlog の許可画面に表示される名前。自分のアプリとわかる名前にする
+   - 言語欄は English と日本語のどちらか一方を残し、「Set this language as a default」で既定にする
+
+   Client Secret はパスワードと同様に扱います。外部に出た場合は再発行してください。
+
+   </details>
+
+### 2.3 config作成
 
 `~/.config/backlog-switcher/config`（INI形式）を作成します。パスは環境変数 `BSWITCH_CONFIG` で上書き可能です。
 
@@ -62,8 +118,9 @@ uv tool install -e .
 space = your-space.backlog.jp      ; スペースのホスト名
 writer_user = svc-writer@example.com   ; 制限なし仮想ユーザー（メールアドレスまたは数値ID）
 reader_user = svc-reader@example.com   ; 「課題の閲覧のみ」仮想ユーザー（同上）
-writer_api_key_ref = op://MyVault/backlog-svc-writer/credential  ; 1Password参照
-reader_api_key_ref = op://MyVault/backlog-svc-reader/credential
+writer_browser_profile = Profile 2     ; writer で認可画面を開く Chrome のプロファイル。MCP サーバーの認可に必須
+reader_browser_profile = Profile 3     ; reader で認可画面を開く Chrome のプロファイル（同上）
+mcp_url = http://localhost:3333/mcp    ; 任意。MCP サーバーの接続先（省略時はこの値）
 default_duration = 8h       ; 任意。--duration未指定時の有効期限（未設定なら8h）
 
 [profile customer-a]
@@ -75,9 +132,13 @@ project = CUSTOMER_B
 permission = write
 ```
 
+- `writer_user` と `reader_user` は、少なくとも一方を設定します。片方だけのときは、その権限のプロファイルだけを使えます
+- `writer_browser_profile` / `reader_browser_profile` には、仮想ユーザーでログインした Chrome プロファイルのディレクトリ名を書きます。ディレクトリ名は、対象のプロファイルで `chrome://version` を開き、「プロフィール パス」の末尾で確認します
+- `mcp_url` は `http://` または `https://` で始まる URL で書きます。MCP サーバーの接続先が `http://localhost:3333/mcp` 以外のとき (リモートの MCP サーバーを使うときなど) に書きます。`bswitch switch` はこの値を `BSWITCH_MCP_URL` に設定し、`bswitch-open-browser` はこの URL のホストを MCP サーバーとして扱います
+
 configが存在しない場合、`bswitch` はサンプルconfigをstderrに表示して終了します（自動生成はしません）。
 
-### 2.3 マスターAPIキーの設定
+### 2.4 マスターAPIキーの設定
 
 `BSWITCH_MASTER_API_KEY` にマスターユーザー（人間）自身のBacklog APIキーを設定します。bswitchが読む唯一の入力用キーです。
 
@@ -85,33 +146,86 @@ configが存在しない場合、`bswitch` はサンプルconfigをstderrに表�
 export BSWITCH_MASTER_API_KEY="..."
 ```
 
-### 2.4 シェル統合の追記
+### 2.5 シェル統合の追記
 
-`.zshrc` に以下を追記します（詳細は「5. シェル統合のセットアップ手順」）。
+`.zshrc` に以下を追記します（詳細は「4. シェル統合のセットアップ手順」）。
 
 ```zsh
 eval "$(command bswitch shell-init zsh)"
 ```
 
+### 2.6 MCP サーバーと Claude Code の設定
+
+1. 公式の MCP サーバーを OAuth モードで起動する準備をする (env ファイルと `~/.zshrc` の関数)
+
+   <details>
+   <summary>env ファイルと起動・停止用の関数</summary>
+
+   `~/.config/backlog-mcp/env` を作り、`chmod 600` にします。値は 1Password の参照で書きます。
+
+   ```bash
+   MCP_TRANSPORT=http
+   MCP_HTTP_HOST=0.0.0.0
+   MCP_HTTP_ALLOWED_HOSTS=localhost
+   MCP_SERVER_BASE_URL=http://localhost:3333
+   BACKLOG_DOMAIN=example.backlog.jp
+   BACKLOG_OAUTH_CLIENT_ID=op://<保管庫>/<項目>/client_id
+   BACKLOG_OAUTH_CLIENT_SECRET=op://<保管庫>/<項目>/client_secret
+   ENABLE_TOOLSETS=issue,project
+   ```
+
+   `MCP_HTTP_HOST=0.0.0.0` は、どこからでも接続を受ける設定です (Docker で動かすために必要です)。次の関数で起動すると `-p 127.0.0.1:3333:3333` で接続元をこの Mac に絞るため、外部からは接続できません。
+
+   `MCP_HTTP_ALLOWED_HOSTS` は、MCP サーバーが受け付ける接続先のホスト名 (リクエストの Host ヘッダー) を決める設定です。Mac のブラウザや Claude Code は `http://localhost:3333` に接続するため、`localhost` を指定します。これ以外のホスト名で届いたリクエストは拒否されます。悪意のある Web ページからブラウザ経由で MCP サーバーを操作される攻撃 (DNS リバインディング) を防ぐためのもので、`0.0.0.0` で待ち受けるときは実質必須です。ポート番号は見ないため、`localhost:3333` を書く必要はありません。
+
+   `~/.zshrc` に次の関数を追記します。イメージは OAuth モードに対応した v0.12.0 以降を、ダイジェストで固定してください。
+
+   ```zsh
+   # Backlog MCP Server (公式, OAuth モード) の起動と停止
+   backlog-mcp-up() {
+     if [ "$(docker inspect -f '{{.State.Running}}' backlog-mcp 2>/dev/null)" = "true" ]; then
+       echo "backlog-mcp is already running"
+       return 0
+     fi
+     docker rm -f backlog-mcp >/dev/null 2>&1
+     env -u BACKLOG_OAUTH_CLIENT_ID -u BACKLOG_OAUTH_CLIENT_SECRET op run --env-file="$HOME/.config/backlog-mcp/env" -- docker run -d --rm --name backlog-mcp -p 127.0.0.1:3333:3333 -e MCP_TRANSPORT -e MCP_HTTP_HOST -e MCP_HTTP_ALLOWED_HOSTS -e MCP_SERVER_BASE_URL -e BACKLOG_DOMAIN -e BACKLOG_OAUTH_CLIENT_ID -e BACKLOG_OAUTH_CLIENT_SECRET -e ENABLE_TOOLSETS ghcr.io/nulab/backlog-mcp-server@sha256:<ダイジェスト>
+   }
+   backlog-mcp-down() { docker stop backlog-mcp; }
+   backlog-mcp-logs() { docker logs -f backlog-mcp; }
+   ```
+
+   - すでに起動していれば何もしません。停止したコンテナが残っていれば削除してから起動します (同じ名前のコンテナがあると `docker run` が失敗するため)
+   - `env -u` で、シェルにある同じ名前の変数 (Backlog CLI の bee も `BACKLOG_OAUTH_CLIENT_ID` / `BACKLOG_OAUTH_CLIENT_SECRET` を使います) を外してから起動します。コンテナには env ファイルの値だけが渡ります。シェルの値はそのまま残ります
+
+   </details>
+
+2. Claude Code の `~/.claude/settings.json` の `env` に `BROWSER` を設定する (既存の `env` があれば要素として追記します)
+
+   ```json
+   "env": {
+     "BROWSER": "bswitch-open-browser"
+   }
+   ```
+
+3. Claude Code に MCP サーバーを登録する
+
+   ```bash
+   claude mcp add --transport http --scope user backlog-oauth '${BSWITCH_MCP_URL}'
+   ```
+
+   URL には `bswitch switch` が設定する環境変数 `BSWITCH_MCP_URL` を書きます。Claude Code は起動するたびに、起動したシェルの値で `${BSWITCH_MCP_URL}` を置き換えます。シングルクォートで囲むのは、登録する時点でシェルが変数を展開しないようにするためです。`bswitch switch` を実行していないシェルでは URL が置き換わらず、`/mcp` に `'url' is not a valid URL` と表示されて `backlog-oauth` はつながりません
+
+4. MCP サーバーを起動する。一度起動すれば、停止するか Mac を再起動するまで動き続けます
+
+   ```bash
+   backlog-mcp-up
+   ```
+
 ## 3. 使い方
 
 `bswitch` の対話UI・警告・エラー・`list`/`status` の表示結果はすべてstderrに出力されます。stdoutには（シェル関数がevalする）export/unset行のみが出力されます。
 
-### 3.1 前提
-
-```bash
-# 1. マスターキー（必須。bswitchの全操作に使う）
-export BSWITCH_MASTER_API_KEY="<マスターユーザーのAPIキー>"
-
-# 2. 仮想ユーザーキー（op://を使わない場合）
-export BACKLOG_WRITER_API_KEY="<writerのAPIキー>"
-export BACKLOG_READER_API_KEY="<readerのAPIキー>"
-
-# 3. シェル統合（.zshrcに追記すると、switch後に環境変数が自動セットされる）
-eval "$(command bswitch shell-init zsh)"
-```
-
-### 3.2 基本フロー
+### 3.1 基本フロー
 
 ```bash
 # どんなプロファイルがあるか確認
@@ -122,9 +236,9 @@ bswitch list
 # プロジェクトAを読み取り専用で操作したい
 bswitch switch customer-a-read
 
-# → BACKLOG_API_KEY にreaderのキーがセットされる
-# → BACKLOG_PROJECT に CUSTOMER_A がセットされる
-# → 環境変数を参照するツールはこれを使ってBacklogにアクセス
+# → reader が CUSTOMER_A に参加する
+# → BACKLOG_PROJECT に CUSTOMER_A、BSWITCH_MCP_URL に MCP サーバーの接続先がセットされる
+# → 同じシェルで起動した Claude Code は、MCP サーバーを通じて reader として Backlog を操作する
 ```
 
 ```bash
@@ -132,17 +246,45 @@ bswitch switch customer-a-read
 bswitch switch customer-a-write
 
 # → 自動で reader が除名され、writer が参加する（排他動作）
-# → BACKLOG_API_KEY が writer のキーに変わる
+# → Claude Code の /mcp で backlog-oauth を認証し直すと、writer として操作できる（「3.2」）
 ```
 
 ```bash
 # 作業終了 → 参加中のプロジェクトから仮想ユーザーを除名
 bswitch release
 
-# → BACKLOG_API_KEY 等がunsetされる
+# → BSWITCH_MCP_URL 等がunsetされる
 ```
 
-### 3.3 便利な機能
+### 3.2 Claude Code から Backlog を操作する
+
+```bash
+bswitch switch <profile>
+claude
+```
+
+`/mcp` で `backlog-oauth` を認証するのは、初回、MCP サーバーを起動し直したとき、reader と writer を切り替えたときです。認可画面は、`bswitch switch` で参加させた仮想ユーザーのプロファイルで開きます。Claude Code は、`bswitch switch` を実行したシェルで起動します。別のターミナルで起動した Claude Code は `backlog-oauth` につながりません。
+
+- **認可したユーザーの確認**: 認証した後に `backlog-oauth` でプロジェクト一覧を取得させ、仮想ユーザーが参加しているプロジェクトだけが返ることを確かめます
+- **reader と writer の切り替え**: 認可したユーザーは MCP の認証情報に結びついています。`bswitch switch` で切り替えたら、`/mcp` で `backlog-oauth` の認証情報を消去し、「Authenticate」を押して認証し直します
+- **MCP サーバーや Mac を再起動したとき**: MCP サーバーはクライアント登録とトークンをメモリにのみ保持するため、`/mcp` で接続すると `invalid_client` (`Unknown client_id`) になります。認証情報を消去してから認証し直します
+
+### 3.3 Claude Code で使うときの注意
+
+- **`BROWSER` は子プロセスにも引き継がれる**: Claude Code が実行するコマンドのうち `BROWSER` を見るもの (`gh` の Web 認証、Python の `webbrowser` など) も `bswitch-open-browser` を通ります。Backlog スペースと MCP サーバー以外の URL は既定のブラウザで開くため、通常は影響しません
+- **`BROWSER` の扱いは公式ドキュメントに記載がない**: Claude Code が `BROWSER` で認可画面を開くことは実機で確認した挙動です。Claude Code の更新で変わる可能性があります
+- **認可画面が開かないとき**: `bswitch-open-browser` は、マスターユーザーで認可させないため、仮想ユーザーのプロファイルを決められないときは URL を開かずに終了します（終了コード1）。理由は `bswitch-open-browser: エラー:` で始まるメッセージとして stderr に出ます。Claude Code の画面で理由がわからないときは、同じシェルで `bswitch-open-browser "https://<space>/"` を実行するとメッセージを確かめられます
+
+  | メッセージ | 対処 |
+  |---|---|
+  | `有効な付与がありません` | `bswitch switch <profile>` を実行してから認証し直す |
+  | `<reader / writer> の Chrome プロファイルが設定されていない` | config の `[default]` に、メッセージにある `writer_browser_profile` / `reader_browser_profile` を書く |
+  | `reader と writer の付与が混ざっている` | `bswitch release` のあと `bswitch switch <profile>` を実行し直す |
+  | `mcp_url (...) と一致しない` | config の `mcp_url` と、MCP サーバーの `MCP_SERVER_BASE_URL` のホスト名・ポートをそろえる（`localhost` と `127.0.0.1` は別のホストとして扱います） |
+  | `config を読めない` / `設定ファイルが見つかりません` | メッセージにある config の誤りを直す（config がないときは「2.3 config作成」） |
+  | `open` 自身のエラー（`Unable to find application named 'Google Chrome'` など。`bswitch-open-browser: エラー:` は付かない） | Google Chrome が入っているか、プロファイル名（`chrome://version` の「プロフィール パス」の末尾）が合っているかを確かめる |
+
+### 3.4 便利な機能
 
 ```bash
 # どのプロファイル使うか迷ったら → 対話UIで選べる
@@ -161,14 +303,14 @@ bswitch status
 bswitch enforce
 ```
 
-### 3.4 ポイント
+### 3.5 ポイント
 
 - `switch` するたびに**前のプロファイルは自動で解除**されます（排他動作）。手動で `release` してから `switch` する必要はありません。
 - `release` は「参加中の付与を外す」コマンドです。作業終了時に使います。state.jsonが消えた等で残留参加が疑われる場合は `bswitch release --all` でconfig定義済みの全プロジェクトを走査して回収できます。
-- シェル統合（`eval "$(command bswitch shell-init zsh)"`）を入れないと、`BACKLOG_API_KEY` 等の環境変数は実際にはセットされません（stdoutに出力されるだけです）。
+- シェル統合（`eval "$(command bswitch shell-init zsh)"`）を入れないと、`BSWITCH_MCP_URL` 等の環境変数は実際にはセットされません（stdoutに出力されるだけです。ターミナルに直接出力したときは警告も出ます）。
 - `--duration` を指定しなくても、configに `default_duration = 8h` と書いておけば自動で期限付きになります。
 
-### 3.5 サブコマンド一覧
+### 3.6 サブコマンド一覧
 
 #### `bswitch switch [profile...]`
 
@@ -198,12 +340,11 @@ bswitch switch customer-a --duration 2h
 
 #### `bswitch restore`（短縮形: `bswitch r`）
 
-state.jsonに記録された付与中の権限に合わせて、`BACKLOG_API_KEY` / `BACKLOG_SPACE` / `BACKLOG_DOMAIN` / `BACKLOG_PROJECT` だけを現在のシェルにセットします。
+state.jsonに記録された付与中の権限に合わせて、`switch` と同じ環境変数（`BACKLOG_SPACE` / `BACKLOG_DOMAIN` / `BACKLOG_PROJECT` / `BSWITCH_MCP_URL`）だけを現在のシェルにセットします。別のターミナルで `switch` した付与を、このシェルの Claude Code から使いたいときに実行します。
 
 - 環境変数がセットされるのは、このコマンドを明示的に実行したときだけです（shell-init等から自動で呼ばれることはありません）
 - Backlog APIを呼ばず、`BSWITCH_MASTER_API_KEY` も不要です。参加・除名・期限延長は行わないため、このコマンドで新たにプロジェクトへアクセスできるようになることはありません
-- 期限切れの付与は対象外です。有効な付与が0件ならエラーで終了します（`bswitch switch <profile>` を実行してください）
-- 解決したAPIキーが付与時の記録（fingerprint）と一致しない場合はexportせずエラーで終了します
+- 期限切れの付与は対象外です。有効な付与が0件なら、`release` と同じ環境変数をunsetしてからエラー（終了コード1）で終了します（`bswitch switch <profile>` を実行してください）
 - 付与中のプロジェクトが複数ある場合、`BACKLOG_PROJECT` はunsetされます
 
 ```bash
@@ -240,7 +381,7 @@ bswitch list
 
 #### `bswitch enforce`
 
-期限切れの付与だけを解除します（定期実行用）。解除対象がなければ何もせず終了コード0です。他の全サブコマンドも冒頭で同じ処理（遅延強制）を自動的に行うため、通常は明示的に呼ぶ必要はありません。定期実行のセットアップは「6. launchdによるenforce定期実行の手動セットアップ手順」を参照してください。
+期限切れの付与だけを解除します（定期実行用）。解除対象がなければ何もせず終了コード0です。他の全サブコマンドも冒頭で同じ処理（遅延強制）を自動的に行うため、通常は明示的に呼ぶ必要はありません。定期実行のセットアップは「5. launchdによるenforce定期実行の手動セットアップ手順」を参照してください。
 
 ```bash
 bswitch enforce
@@ -250,43 +391,7 @@ bswitch enforce
 
 シェル統合用の関数定義を出力します（`.zshrc` にeval経由で読み込む）。詳細は次章。
 
-## 4. 仮想ユーザーキーの1Password保管と `op://` 参照の設定手順
-
-1. 1Password CLI（`op`）をインストールし、ログインしておきます（`op signin`）。
-2. writer/reader それぞれの仮想ユーザーAPIキーを1Passwordのボールト（例: `MyVault`）に保存します。
-
-   ```bash
-   op item create --category="API Credential" \
-     --vault MyVault \
-     --title "backlog-svc-writer" \
-     credential="<writerのAPIキー>"
-
-   op item create --category="API Credential" \
-     --vault MyVault \
-     --title "backlog-svc-reader" \
-     credential="<readerのAPIキー>"
-   ```
-
-3. configの `writer_api_key_ref` / `reader_api_key_ref` に `op://` 参照を書きます。
-
-   ```ini
-   writer_api_key_ref = op://MyVault/backlog-svc-writer/credential
-   reader_api_key_ref = op://MyVault/backlog-svc-reader/credential
-   ```
-
-4. 動作確認:
-
-   ```bash
-   op read op://MyVault/backlog-svc-writer/credential
-   ```
-
-   値が表示されればOKです。bswitch実行時は `subprocess.run(["op", "read", ref])` で都度取得され、ファイルには一切書き出されません。
-
-### テスト・非1Password環境用フォールバック
-
-環境変数 `BACKLOG_WRITER_API_KEY` / `BACKLOG_READER_API_KEY` が設定されていれば、`op read` を呼ばずそちらを優先して使います（E2Eテスト等で使用）。
-
-## 5. シェル統合のセットアップ手順
+## 4. シェル統合のセットアップ手順
 
 Grantedと同様、子プロセスは親シェルの環境変数を変更できないため、シェル関数ラッパー方式で実現しています。
 
@@ -304,13 +409,13 @@ Grantedと同様、子プロセスは親シェルの環境変数を変更でき�
 
 3. これで `bswitch` はシェル関数として定義されます。`bswitch switch <profile>` を実行すると、内部で `command bswitch "$@"` を実行して標準出力（export/unset行のみ）を `eval` し、現在のシェルに環境変数が反映されます。
 
-## 6. launchdによるenforce定期実行の手動セットアップ手順
+## 5. launchdによるenforce定期実行の手動セットアップ手順
 
 `--duration` 付きで付与した権限は、どのサブコマンドを実行しても冒頭で自動的に期限切れチェック（遅延強制）が働きますが、しばらくbswitchを実行しない場合に備えて `bswitch enforce` を定期実行しておくと安全です。自動インストールは提供しないため、以下の手順で手動セットアップしてください。
 
 **重要**: `BSWITCH_MASTER_API_KEY` をplist等のファイルに直接書かないでください。plistから起動するラッパースクリプトが、実行時にmacOS KeychainまたはFile 1Password CLI経由でキーを取得する構成にします。
 
-### 6.1 方式A: macOS Keychainを使う
+### 5.1 方式A: macOS Keychainを使う
 
 1. マスターAPIキーをKeychainに登録する（一度だけ、手動で実行）。
 
@@ -366,7 +471,7 @@ Grantedと同様、子プロセスは親シェルの環境変数を変更でき�
    launchctl unload ~/Library/LaunchAgents/com.example.bswitch-enforce.plist
    ```
 
-### 6.2 方式B: 1Password CLIを使う
+### 5.2 方式B: 1Password CLIを使う
 
 ラッパースクリプトを以下のように変更するだけで、Keychainの代わりに1Password CLIからマスターキーを取得できます（1Password CLIがデスクトップアプリ連携でロック解除済みであることが前提）。
 
@@ -379,7 +484,7 @@ exec uv run --project /path/to/backlog-switcher bswitch enforce
 
 plistの設定手順は方式Aと同じです（`ProgramArguments` が指すスクリプトの中身だけが異なります）。
 
-## 7. ステータスライン統合
+## 6. ステータスライン統合
 
 `bswitch check` の結果を Claude Code のステータスライン・tmux・starship などに表示するサンプルスクリプトを `docs/examples/bswitch-statusline.js` に用意しています。
 
@@ -394,7 +499,7 @@ plistの設定手順は方式Aと同じです（`ProgramArguments` が指すス�
 
 Claude Code の `statusline.js`・tmux・starship などから `node bswitch-statusline.js` を呼び出して使います。スクリプト全文は [`docs/examples/bswitch-statusline.js`](docs/examples/bswitch-statusline.js) を参照してください。
 
-## 8. Claude Code hook 連携
+## 7. Claude Code hook 連携
 
 Claude Code の hook と組み合わせると、AI エージェントが意図しないプロジェクトへ書き込む事故を2段構えで防げます。サンプルスクリプトと導入手順を [`docs/examples/claude-code-hooks.md`](docs/examples/claude-code-hooks.md) に用意しています。
 
@@ -419,156 +524,6 @@ Claude Code の hook と組み合わせると、AI エージェントが意図�
 Backlog を操作するかどうかに関わらずセッション開始時に1回判定させるため、Backlog と無関係な作業でもズレに気づけます。付与0件かつ `BACKLOG_API_KEY` 未設定のときは何も注入しないため、Backlog を使わないプロジェクトでの作業にノイズは出ません。
 
 `SessionStart` hook は仕様上ツール実行をブロックできないため、これは注意喚起です。強制力のあるブロックは PreToolUse hook（キー整合）が担います。
-
-## 9. Backlog MCP サーバーを OAuth で使う
-
-Backlog 公式の MCP サーバーを OAuth モードで動かすと、仮想ユーザーの API キーを使わずに Claude Code から Backlog を操作できます。仮想ユーザーの参加・除名は bswitch が行い、MCP サーバーは仮想ユーザーとして認可されたトークンで Backlog を操作します。Claude Code の環境変数 `BROWSER` に bswitch 同梱の `bswitch-open-browser` を設定しておくと、MCP の認可画面は、そのとき付与中の仮想ユーザーの Chrome プロファイルで開きます。付与がないときは認可画面を開かないため、マスターユーザーとして認可されることはありません。
-
-MCP サーバーの接続先は、`bswitch switch` がシェルに設定する環境変数 `BSWITCH_MCP_URL` で Claude Code に登録します。`bswitch switch` を実行したシェルで起動した Claude Code だけが MCP サーバーにつながり、それ以外のターミナルで起動した Claude Code からは Backlog を操作できません。
-
-```mermaid
-sequenceDiagram
-    actor 人 as 利用者
-    box 手元の Mac
-        participant bswitch
-        participant Claude as Claude Code
-        participant Browser as Chrome<br/>(仮想ユーザー用プロファイル)
-        participant MCP as Backlog MCP サーバー<br/>(Docker, localhost:3333)
-    end
-    box インターネット
-        participant Backlog as Backlog スペース
-    end
-
-    人->>bswitch: bswitch switch customer-a
-    bswitch->>Backlog: マスターとして、仮想ユーザーを<br/>プロジェクトに参加させる
-    bswitch->>人: このシェルに BSWITCH_MCP_URL を設定
-
-    人->>Claude: 同じシェルで claude を起動し /mcp で認証
-    Claude->>Browser: 認可画面を開く (bswitch-open-browser が<br/>付与中の仮想ユーザーのプロファイルを選ぶ)
-    人->>Browser: 仮想ユーザーとして許可
-    Browser->>MCP: 認可コード
-    MCP->>Backlog: トークンを取得 (仮想ユーザー)
-
-    人->>Claude: 「課題を一覧して」
-    Claude->>MCP: MCP ツールを呼ぶ
-    MCP->>Backlog: 仮想ユーザーとして API を呼ぶ<br/>(参加中のプロジェクトだけ見える)
-```
-
-bswitch は、どの仮想ユーザー (reader / writer) をどのプロジェクトに参加させるかをコントロールします。AI は MCP サーバーを通じて、MCP サーバーで認可した (ログインした) 仮想ユーザーとして Backlog を操作します。どの仮想ユーザーで認可するかによって、AI が操作できる範囲が変わります。
-
-### 9.1 初回のセットアップ
-
-1. 仮想ユーザー (reader / writer) ごとに Chrome プロファイルを作り、それぞれの仮想ユーザーで Backlog スペースにログインする
-2. Backlog Developer サイト (https://backlog.com/developer/applications/) で開発アプリを登録し、Client ID と Client Secret を 1Password に保存する
-
-   <details>
-   <summary>登録画面の入力内容</summary>
-
-   「Manage application」から Nulab アカウントでログインし、「Register new application」で次を入力して「Create」を押します。
-
-   - Redirect URI: `http://localhost:3333/callback`
-   - Application name: Backlog の許可画面に表示される名前。自分のアプリとわかる名前にする
-   - 言語欄は English と日本語のどちらか一方を残し、「Set this language as a default」で既定にする
-
-   Client Secret はパスワードと同様に扱います。スクリーンショットなどで外部に出た場合は再発行してください。
-
-   </details>
-
-3. 公式の MCP サーバーを OAuth モードで起動する準備をする (env ファイルと `~/.zshrc` の関数)
-
-   <details>
-   <summary>env ファイルと起動・停止用の関数</summary>
-
-   `~/.config/backlog-mcp/env` を作り、`chmod 600` にします。値は 1Password の参照で書きます。
-
-   ```bash
-   MCP_TRANSPORT=http
-   MCP_HTTP_HOST=0.0.0.0
-   MCP_HTTP_ALLOWED_HOSTS=localhost
-   MCP_SERVER_BASE_URL=http://localhost:3333
-   BACKLOG_DOMAIN=example.backlog.jp
-   BACKLOG_OAUTH_CLIENT_ID=op://<保管庫>/<項目>/client_id
-   BACKLOG_OAUTH_CLIENT_SECRET=op://<保管庫>/<項目>/client_secret
-   ENABLE_TOOLSETS=issue,project
-   ```
-
-   `MCP_HTTP_HOST=0.0.0.0` は、どこからでも接続を受ける設定です (Docker で動かすために必要です)。次の関数で起動すると `-p 127.0.0.1:3333:3333` で接続元をこの Mac に絞るため、外部からは接続できません。
-
-   `MCP_HTTP_ALLOWED_HOSTS` は、MCP サーバーが受け付ける接続先のホスト名 (リクエストの Host ヘッダー) を決める設定です。Mac のブラウザや Claude Code は `http://localhost:3333` に接続するため、`localhost` を指定します。これ以外のホスト名で届いたリクエストは拒否されます。悪意のある Web ページからブラウザ経由で MCP サーバーを操作される攻撃 (DNS リバインディング) を防ぐためのもので、`0.0.0.0` で待ち受けるときは実質必須です。ポート番号は見ないため、`localhost:3333` を書く必要はありません。
-
-   `~/.zshrc` に次の関数を追記します。イメージは OAuth モードに対応した v0.12.0 以降を、ダイジェストで固定してください。
-
-   ```zsh
-   # Backlog MCP Server (公式, OAuth モード) の起動と停止
-   backlog-mcp-up() {
-     if [ "$(docker inspect -f '{{.State.Running}}' backlog-mcp 2>/dev/null)" = "true" ]; then
-       echo "backlog-mcp is already running"
-       return 0
-     fi
-     docker rm -f backlog-mcp >/dev/null 2>&1
-     env -u BACKLOG_OAUTH_CLIENT_ID -u BACKLOG_OAUTH_CLIENT_SECRET op run --env-file="$HOME/.config/backlog-mcp/env" -- docker run -d --rm --name backlog-mcp -p 127.0.0.1:3333:3333 -e MCP_TRANSPORT -e MCP_HTTP_HOST -e MCP_HTTP_ALLOWED_HOSTS -e MCP_SERVER_BASE_URL -e BACKLOG_DOMAIN -e BACKLOG_OAUTH_CLIENT_ID -e BACKLOG_OAUTH_CLIENT_SECRET -e ENABLE_TOOLSETS ghcr.io/nulab/backlog-mcp-server@sha256:<ダイジェスト>
-   }
-   backlog-mcp-down() { docker stop backlog-mcp; }
-   backlog-mcp-logs() { docker logs -f backlog-mcp; }
-   ```
-
-   - すでに起動していれば何もしません。停止したコンテナが残っていれば削除してから起動します (同じ名前のコンテナがあると `docker run` が失敗するため)
-   - `env -u` で、シェルにある同じ名前の変数 (Backlog CLI の bee も `BACKLOG_OAUTH_CLIENT_ID` / `BACKLOG_OAUTH_CLIENT_SECRET` を使います) を外してから起動します。コンテナには env ファイルの値だけが渡ります。シェルの値はそのまま残ります
-
-   </details>
-
-4. bswitch の config の `[default]` に、仮想ユーザーごとの Chrome プロファイルを書く
-
-   ```ini
-   writer_browser_profile = Profile 2   ; writer でログインしたプロファイルのディレクトリ名
-   reader_browser_profile = Profile 3   ; reader でログインしたプロファイルのディレクトリ名
-   ```
-
-   ディレクトリ名は、対象のプロファイルで `chrome://version` を開き、「プロフィール パス」の末尾で確認します。
-
-   MCP サーバーの接続先が `http://localhost:3333/mcp` 以外のとき (リモートの MCP サーバーを使うときなど) は、`mcp_url` に接続先の URL を書きます。`bswitch switch` はこの値を `BSWITCH_MCP_URL` に設定し、`bswitch-open-browser` はこの URL のホストを MCP サーバーとして扱います
-
-5. Claude Code の `~/.claude/settings.json` の `env` に `BROWSER` を設定する (既存の `env` があれば要素として追記します)
-
-   ```json
-   "env": {
-     "BROWSER": "bswitch-open-browser"
-   }
-   ```
-
-6. Claude Code に MCP サーバーを登録する
-
-   ```bash
-   claude mcp add --transport http --scope user backlog-oauth '${BSWITCH_MCP_URL}'
-   ```
-
-   URL には `bswitch switch` が設定する環境変数 `BSWITCH_MCP_URL` を書きます。Claude Code は起動するたびに、起動したシェルの値で `${BSWITCH_MCP_URL}` を置き換えます。シングルクォートで囲むのは、登録する時点でシェルが変数を展開しないようにするためです。`bswitch switch` を実行していないシェルでは URL が置き換わらず、`/mcp` に `'url' is not a valid URL` と表示されて `backlog-oauth` はつながりません
-
-7. MCP サーバーを起動する。一度起動すれば、停止するか Mac を再起動するまで動き続けます
-
-   ```bash
-   backlog-mcp-up
-   ```
-
-### 9.2 普段の使い方
-
-```bash
-bswitch switch <profile>
-claude
-```
-
-`/mcp` で `backlog-oauth` を認証するのは、初回、MCP サーバーを起動し直したとき、reader と writer を切り替えたときです。認可画面は、`bswitch switch` で参加させた仮想ユーザーのプロファイルで開きます。Claude Code は、`bswitch switch` を実行したシェルで起動します。別のターミナルで起動した Claude Code は `backlog-oauth` につながりません。
-
-- **認可したユーザーの確認**: 認証した後に `backlog-oauth` でプロジェクト一覧を取得させ、仮想ユーザーが参加しているプロジェクトだけが返ることを確かめます
-- **reader と writer の切り替え**: 認可したユーザーは MCP の認証情報に結びついています。`bswitch switch` で切り替えたら、`/mcp` で `backlog-oauth` の認証情報を消去し、「Authenticate」を押して認証し直します
-- **MCP サーバーや Mac を再起動したとき**: MCP サーバーはクライアント登録とトークンをメモリにのみ保持するため、`/mcp` で接続すると `invalid_client` (`Unknown client_id`) になります。認証情報を消去してから認証し直します
-
-### 9.3 注意
-
-- **`BROWSER` は子プロセスにも引き継がれる**: Claude Code が実行するコマンドのうち `BROWSER` を見るもの (`gh` の Web 認証、Python の `webbrowser` など) も `bswitch-open-browser` を通ります。Backlog スペースと MCP サーバー以外の URL は既定のブラウザで開くため、通常は影響しません
-- **`BROWSER` の扱いは公式ドキュメントに記載がない**: Claude Code が `BROWSER` で認可画面を開くことは実機で確認した挙動です。Claude Code の更新で変わる可能性があります
-
-仕様の詳細と出典は [docs/api.md](docs/api.md) の「OAuth 2.0」を参照してください。
 
 ## 開発
 

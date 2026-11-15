@@ -13,8 +13,6 @@ VALID_INI = """\
 space = test-space.backlog.com
 writer_user = svc-writer@example.com
 reader_user = svc-reader@example.com
-writer_api_key_ref = op://MyVault/backlog-svc-writer/credential
-reader_api_key_ref = op://MyVault/backlog-svc-reader/credential
 default_duration = 8h
 
 [profile test-read]
@@ -66,28 +64,9 @@ def test_missing_space_raises_configerror(tmp_path: Path) -> None:
         load_config(path)
 
 
-def test_writer_pair_incomplete_raises_configerror(tmp_path: Path) -> None:
-    lines = [line for line in VALID_INI.splitlines() if not line.startswith("writer_api_key_ref ")]
-    path = _write(tmp_path, "\n".join(lines))
-
-    with pytest.raises(ConfigError, match="ペアで設定"):
-        load_config(path)
-
-
-def test_reader_pair_incomplete_raises_configerror(tmp_path: Path) -> None:
-    lines = [line for line in VALID_INI.splitlines() if not line.startswith("reader_api_key_ref ")]
-    path = _write(tmp_path, "\n".join(lines))
-
-    with pytest.raises(ConfigError, match="ペアで設定"):
-        load_config(path)
-
-
 def test_neither_writer_nor_reader_raises_configerror(tmp_path: Path) -> None:
-    lines = [
-        line
-        for line in VALID_INI.splitlines()
-        if not line.startswith(("writer_user ", "writer_api_key_ref ", "reader_user ", "reader_api_key_ref "))
-    ]
+    """テストケース2: writer_user も reader_user もないとエラーになる。"""
+    lines = [line for line in VALID_INI.splitlines() if not line.startswith(("writer_user ", "reader_user "))]
     path = _write(tmp_path, "\n".join(lines))
 
     with pytest.raises(ConfigError, match="少なくとも一方"):
@@ -95,7 +74,8 @@ def test_neither_writer_nor_reader_raises_configerror(tmp_path: Path) -> None:
 
 
 def test_writer_only_config_is_valid(tmp_path: Path) -> None:
-    lines = [line for line in VALID_INI.splitlines() if not line.startswith(("reader_user ", "reader_api_key_ref "))]
+    """テストケース1: writer_user だけ (キーの参照なし) の config を読める。"""
+    lines = [line for line in VALID_INI.splitlines() if not line.startswith("reader_user ")]
     path = _write(tmp_path, "\n".join(lines))
 
     config = load_config(path)
@@ -104,12 +84,87 @@ def test_writer_only_config_is_valid(tmp_path: Path) -> None:
 
 
 def test_reader_only_config_is_valid(tmp_path: Path) -> None:
-    lines = [line for line in VALID_INI.splitlines() if not line.startswith(("writer_user ", "writer_api_key_ref "))]
+    """テストケース1: reader_user だけでも読める。"""
+    lines = [line for line in VALID_INI.splitlines() if not line.startswith("writer_user ")]
     path = _write(tmp_path, "\n".join(lines))
 
     config = load_config(path)
     assert config.default.reader_user == "svc-reader@example.com"
     assert config.default.writer_user is None
+
+
+@pytest.mark.parametrize(
+    ("key", "value"), [("writer_api_key_ref", "op://MyVault/backlog-svc/credential"), ("reader_api_key_ref", "")]
+)
+def test_api_key_ref_left_in_config_raises_with_removal_hint(tmp_path: Path, key: str, value: str) -> None:
+    """テストケース3: *_api_key_ref が残っていると (値が空でも) 項目名と削除の案内を含むエラーになる。"""
+    content = VALID_INI.replace("default_duration = 8h\n", f"default_duration = 8h\n{key} = {value}\n")
+    path = _write(tmp_path, content)
+
+    with pytest.raises(ConfigError) as excinfo:
+        load_config(path)
+
+    message = str(excinfo.value)
+    assert key in message
+    assert "削除" in message
+
+
+def test_mcp_url_defaults_to_localhost(tmp_path: Path) -> None:
+    """テストケース4: mcp_url を書かないと http://localhost:3333/mcp になる。"""
+    path = _write(tmp_path, VALID_INI)
+
+    config = load_config(path)
+
+    assert config.default.mcp_url == "http://localhost:3333/mcp"
+
+
+def test_mcp_url_is_used_as_written(tmp_path: Path) -> None:
+    """テストケース4: 書いた mcp_url はそのまま使われる。"""
+    content = VALID_INI.replace(
+        "default_duration = 8h\n", "default_duration = 8h\nmcp_url = https://mcp.example.com:8443/mcp\n"
+    )
+    path = _write(tmp_path, content)
+
+    config = load_config(path)
+
+    assert config.default.mcp_url == "https://mcp.example.com:8443/mcp"
+
+
+@pytest.mark.parametrize(
+    "value",
+    ["ftp://localhost:3333/mcp", "localhost:3333/mcp", "http:///mcp"],
+)
+def test_invalid_mcp_url_raises_configerror(tmp_path: Path, value: str) -> None:
+    """テストケース5: スキームが http / https 以外, スキームがない, ホストがないときはエラーになる。"""
+    content = VALID_INI.replace("default_duration = 8h\n", f"default_duration = 8h\nmcp_url = {value}\n")
+    path = _write(tmp_path, content)
+
+    with pytest.raises(ConfigError, match="mcp_url"):
+        load_config(path)
+
+
+def test_browser_profile_with_space_is_read_as_is(tmp_path: Path) -> None:
+    """テストケース6: スペースを含むプロファイル名をそのまま読める。"""
+    content = VALID_INI.replace(
+        "default_duration = 8h\n",
+        "default_duration = 8h\nwriter_browser_profile = Profile 2\nreader_browser_profile = Profile 3\n",
+    )
+    path = _write(tmp_path, content)
+
+    config = load_config(path)
+
+    assert config.default.writer_browser_profile == "Profile 2"
+    assert config.default.reader_browser_profile == "Profile 3"
+
+
+def test_browser_profile_is_unset_when_omitted(tmp_path: Path) -> None:
+    """テストケース6: 書かないと未設定になる。"""
+    path = _write(tmp_path, VALID_INI)
+
+    config = load_config(path)
+
+    assert config.default.writer_browser_profile is None
+    assert config.default.reader_browser_profile is None
 
 
 def test_missing_project_in_profile_raises_configerror(tmp_path: Path) -> None:
@@ -164,7 +219,9 @@ def test_config_not_found_exits_with_sample(tmp_path: Path, capsys: pytest.Captu
     captured = capsys.readouterr()
     assert "設定ファイルが見つかりません" in captured.err
     assert "[default]" in captured.err
-    assert "writer_api_key_ref" in captured.err
+    assert "writer_api_key_ref" not in captured.err
+    assert "mcp_url" in captured.err
+    assert "writer_browser_profile" in captured.err
 
 
 def test_bswitch_config_env_overrides_path(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

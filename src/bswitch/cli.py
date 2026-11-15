@@ -2,13 +2,15 @@
 
 出力の分離（docs/design.md「シェル統合の仕組み」の厳守事項）:
   - 対話UIメッセージ・警告・エラー・list/statusの表示結果はすべてstderrへ。
-  - stdoutには `switch`/`restore`/`release` 成功時のexport/unset行のみを出力する
+  - stdoutには `switch`/`restore`/`release` のexport/unset行のみを出力する
     （シェル関数 `bswitch()` がこれを丸ごと `eval` するため、他の文字列が混じると壊れる）。
+    期限内の付与がない `restore` も、unset行を出力してから exit 1 にする
+    （シェル関数は終了コードに関係なく出力を eval する）。
 
 環境変数の入出力分離（docs/design.md「環境変数設計」の厳守事項）:
   - bswitchが読む入力は `BSWITCH_MASTER_API_KEY`（必須）と `BSWITCH_CONFIG`（任意）のみ。
-  - `BACKLOG_API_KEY` はswitchが書き込む出力専用であり、bswitch自身は一切読まない。
-    例外: `check` サブコマンドは「現在の BACKLOG_API_KEY が期待キーと整合しているか」を
+  - `BSWITCH_MCP_URL` などは出力専用であり、bswitch自身は読まない。`BACKLOG_API_KEY` は unset だけする。
+    例外: `check` サブコマンドは「現在の BACKLOG_API_KEY が付与記録と整合しているか」を
     確認する目的に限り参照する。
 """
 
@@ -24,7 +26,7 @@ import httpx
 from bswitch import shell, switcher, ui
 from bswitch.api import BacklogApiError, BacklogClient
 from bswitch.config import Config, ConfigError, load_config
-from bswitch.keys import KeyResolutionError, compute_fingerprint
+from bswitch.keys import compute_fingerprint
 from bswitch.models import Profile, State
 from bswitch.state import load_state, save_state
 from bswitch.switcher import SwitcherError
@@ -37,7 +39,6 @@ ENV_MASTER_API_KEY = "BSWITCH_MASTER_API_KEY"
 _APP_ERRORS: tuple[type[Exception], ...] = (
     ConfigError,
     BacklogApiError,
-    KeyResolutionError,
     SwitcherError,
     ValueError,
 )
@@ -157,42 +158,28 @@ def _resolve_selected_profiles(args: argparse.Namespace, config: Config, all_pro
     return [ui.select_profile(all_profiles)]
 
 
-_EXPORT_API_KEY_PREFIX = "export BACKLOG_API_KEY="
-
-
-def _mask_api_key_line(line: str) -> str:
-    """`export BACKLOG_API_KEY=...` 行の値部分だけを伏せる（他のexport行はそのまま）。"""
-    if line.startswith(_EXPORT_API_KEY_PREFIX):
-        return f"{_EXPORT_API_KEY_PREFIX}********"
-    return line
-
-
 def _print_export_lines(lines: list[str]) -> None:
-    """export行をstdoutへ出す。ターミナル直結（evalされない）ときはAPIキーを伏せて警告する。"""
+    """export/unset行をstdoutへ出す。ターミナル直結（evalされない）ときは警告も出す。"""
     if sys.stdout.isatty():
         # シェル関数（`eval "$(command bswitch shell-init zsh)"`）経由ではなく、
-        # ターミナルへ直接出力されている＝evalされない＝APIキーの生値を表示する意味がない。
-        # 生値の端末出力（スクロールバック・ターミナルログへの残留）を避けるため伏せて表示する。
+        # ターミナルへ直接出力されている＝evalされない。
         print(
             "警告: シェル統合が設定されていないため、環境変数は現在のシェルにエクスポートされません。"
             '.zshrcに `eval "$(command bswitch shell-init zsh)"` を追記してください。',
             file=sys.stderr,
         )
-        for line in lines:
-            print(_mask_api_key_line(line))
-    else:
-        for line in lines:
-            print(line)
+    for line in lines:
+        print(line)
 
 
 def _handle_restore(config: Config) -> None:
-    state = load_state(config.state_path)
-    try:
-        lines = switcher.restore(config.default, state)
-    except _APP_ERRORS as exc:
-        print(f"エラー: {exc}", file=sys.stderr)
+    grants = switcher.active_grants(load_state(config.state_path))
+    if not grants:
+        # 期限切れの BSWITCH_MCP_URL などをシェルに残さないため、unset行を出してから失敗する。
+        print(f"エラー: {switcher.NO_ACTIVE_GRANT_MESSAGE}", file=sys.stderr)
+        _print_export_lines(shell.make_unset_lines())
         sys.exit(1)
-    _print_export_lines(lines)
+    _print_export_lines(switcher.restore(config.default, grants))
 
 
 def _handle_switch(args: argparse.Namespace, config: Config, client: BacklogClient, state: State) -> None:
@@ -255,7 +242,11 @@ def main() -> None:
         _handle_shell_init(args.shell)
         return
 
-    config = load_config()
+    try:
+        config = load_config()
+    except ConfigError as exc:
+        print(f"エラー: {exc}", file=sys.stderr)
+        sys.exit(1)
 
     if args.command == "list":
         _handle_list(config)

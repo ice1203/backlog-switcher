@@ -88,8 +88,6 @@ def numeric_config() -> DefaultConfig:
         space="test-space.backlog.com",
         writer_user="200",
         reader_user="100",
-        writer_api_key_ref="op://MyVault/backlog-svc-writer/credential",
-        reader_api_key_ref="op://MyVault/backlog-svc-reader/credential",
         default_duration=None,
     )
 
